@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>post.pointless v0.99 - Point Cloud Viewer</title>
+    <title>post.pointless v0.99.1 - Point Cloud Viewer</title>
     <style>
         * {
             margin: 0;
@@ -556,7 +556,7 @@
                 </div>
 
                 <div class="help-section-title">Capture</div>
-                <div class="help-row"><div class="help-key">UI dot</div><div class="help-text">Toggle UI. If Rec with UI Button is on, hold to record and release to stop.</div></div>
+                <div class="help-row"><div class="help-key">UI dot</div><div class="help-text">Toggle UI. If Rec with Dot is on, click once to start recording and click again to stop. Duration still cuts automatic chunks.</div></div>
                 <div class="help-row"><div class="help-key">R</div><div class="help-text">Start or stop video recording.</div></div>
                 <div class="help-row"><div class="help-key">J</div><div class="help-text">Export JPEG using the current output setting.</div></div>
 
@@ -592,7 +592,7 @@
         // ============================================
         // APP VERSION - change this in ONE place!
         // ============================================
-        const APP_VERSION = '0.99';
+        const APP_VERSION = '0.99.1';
         
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -966,6 +966,7 @@
             videoBitrate: 30,
             isRecording: false,
             recWithUIButton: true,
+            recordTimer: '00:00 / 00:04',
 
             resolution: 'Screen',
             showPreviewFrame: false,
@@ -1155,7 +1156,7 @@
             min: 1.0,
             max: 60.0,
             step: 0.5,
-        });
+        }).on('change', () => updateRecordTimerDisplay(true));
 
         exportFolder.addBinding(PARAMS, 'videoFormat', {
             label: 'Video Format',
@@ -1173,8 +1174,13 @@
         });
 
         exportFolder.addBinding(PARAMS, 'recWithUIButton', {
-            label: 'Rec with UI Button',
+            label: 'Rec with Dot',
         }).on('change', updateUIToggleMode);
+
+        const recordTimerBinding = exportFolder.addBinding(PARAMS, 'recordTimer', {
+            label: 'Timer',
+            readonly: true,
+        });
 
         exportFolder.addButton({
             title: 'START Recording',
@@ -5756,9 +5762,29 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             updatePreviewFrame();
         }
 
+        let recordTimerLastUpdate = 0;
+
+        function formatRecordTimer(seconds) {
+            const totalSeconds = Math.max(0, Math.ceil(seconds));
+            const minutes = Math.floor(totalSeconds / 60);
+            const remainingSeconds = totalSeconds % 60;
+            return `${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+        }
+
+        function updateRecordTimerDisplay(force = false) {
+            const now = Date.now();
+            if (!force && now - recordTimerLastUpdate < 200) return;
+            recordTimerLastUpdate = now;
+
+            const elapsed = PARAMS.isRecording && recordingStartTime > 0
+                ? Math.min((now - recordingStartTime) / 1000, PARAMS.videoDuration)
+                : 0;
+            PARAMS.recordTimer = `${formatRecordTimer(elapsed)} / ${formatRecordTimer(PARAMS.videoDuration)}`;
+            if (recordTimerBinding) recordTimerBinding.refresh();
+        }
+
         function startVideoRecording(options = {}) {
             const fromUIToggle = options && options.fromUIToggle === true;
-            const useDurationLimit = options && options.useDurationLimit !== false;
 
             if (!pointCloud) {
                 alert('Load a point cloud first!');
@@ -5834,6 +5860,8 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 restoreLiveViewport();
 
                 PARAMS.isRecording = false;
+                recordingStartTime = 0;
+                updateRecordTimerDisplay(true);
                 pane.refresh();
                 controlsPane.refresh();
                 updateUIToggleMode();
@@ -5849,14 +5877,13 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             PARAMS.isRecording = true;
             recordingStartTime = Date.now();
             document.getElementById('recording-indicator').style.display = 'block';
+            updateRecordTimerDisplay(true);
             updateUIToggleMode();
             
 
-            if (useDurationLimit) {
-                setTimeout(() => {
-                    if (PARAMS.isRecording) stopVideoRecording();
-                }, PARAMS.videoDuration * 1000);
-            }
+            setTimeout(() => {
+                if (PARAMS.isRecording) stopVideoRecording();
+            }, PARAMS.videoDuration * 1000);
 
             return true;
         }
@@ -6037,8 +6064,6 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
 
         // UI TOGGLE
         let uiVisible = true;
-        let uiTogglePointerRecording = false;
-        let uiToggleActivePointerId = null;
         const uiToggle = document.getElementById('ui-toggle');
         const paneWrapper = document.getElementById('pane-wrapper');
         const statsEl = document.getElementById('stats');
@@ -6070,81 +6095,26 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             button.classList.toggle('record-armed', PARAMS.recWithUIButton && !PARAMS.isRecording);
             button.classList.toggle('recording-dot', PARAMS.isRecording && recordingStartedByUIToggle);
             button.title = PARAMS.recWithUIButton
-                ? 'Hold to record, release to stop'
+                ? 'Click to start/stop recording'
                 : 'Toggle UI';
         }
 
         function handleUIToggleClick() {
             if (PARAMS.recWithUIButton) {
-                return;
+                if (PARAMS.isRecording && recordingStartedByUIToggle) {
+                    stopVideoRecording();
+                    setUIVisible(true);
+                    return;
+                }
+
+                if (uiVisible && !PARAMS.isRecording) {
+                    const started = startVideoRecording({ fromUIToggle: true });
+                    if (started) setUIVisible(false);
+                    return;
+                }
             }
 
             setUIVisible(!uiVisible);
-        }
-
-        function handleUITogglePointerDown(e) {
-            if (!PARAMS.recWithUIButton) return;
-            if (e.button !== undefined && e.button !== 0) return;
-
-            e.preventDefault();
-            e.stopPropagation();
-
-            if (PARAMS.isRecording) return;
-
-            uiTogglePointerRecording = true;
-            uiToggleActivePointerId = e.pointerId;
-            if (uiToggle.setPointerCapture && e.pointerId !== undefined) {
-                try {
-                    uiToggle.setPointerCapture(e.pointerId);
-                } catch (error) {
-                    // Pointer capture can fail if the pointer is already gone.
-                }
-            }
-
-            const started = startVideoRecording({
-                fromUIToggle: true,
-                useDurationLimit: false,
-            });
-            if (started) {
-                setUIVisible(false);
-            } else {
-                uiTogglePointerRecording = false;
-                uiToggleActivePointerId = null;
-            }
-        }
-
-        function handleUITogglePointerUp(e) {
-            if (!PARAMS.recWithUIButton) return;
-            if (
-                uiToggleActivePointerId !== null &&
-                e.pointerId !== undefined &&
-                e.pointerId !== uiToggleActivePointerId
-            ) {
-                return;
-            }
-
-            if (!uiTogglePointerRecording && !(PARAMS.isRecording && recordingStartedByUIToggle)) {
-                return;
-            }
-
-            e.preventDefault();
-            e.stopPropagation();
-
-            if (uiToggle.releasePointerCapture && uiToggleActivePointerId !== null) {
-                try {
-                    uiToggle.releasePointerCapture(uiToggleActivePointerId);
-                } catch (error) {
-                    // The capture may already be released after pointer cancel.
-                }
-            }
-
-            uiTogglePointerRecording = false;
-            uiToggleActivePointerId = null;
-
-            if (PARAMS.isRecording && recordingStartedByUIToggle) {
-                stopVideoRecording();
-                setUIVisible(true);
-            }
         }
 
         function showHelpModal() {
@@ -6159,18 +6129,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             helpModal.setAttribute('aria-hidden', 'true');
         }
 
-        uiToggle.addEventListener('pointerdown', handleUITogglePointerDown);
-        uiToggle.addEventListener('pointerup', handleUITogglePointerUp);
-        uiToggle.addEventListener('pointercancel', handleUITogglePointerUp);
-        window.addEventListener('pointerup', handleUITogglePointerUp);
-        window.addEventListener('pointercancel', handleUITogglePointerUp);
-        uiToggle.addEventListener('click', (e) => {
-            if (PARAMS.recWithUIButton) {
-                e.preventDefault();
-                e.stopPropagation();
-            }
-            handleUIToggleClick();
-        });
+        uiToggle.addEventListener('click', handleUIToggleClick);
         if (helpClose) helpClose.addEventListener('click', hideHelpModal);
         if (paneHelpButton) {
             paneHelpButton.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -6189,6 +6148,8 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
 
         function animate() {
             requestAnimationFrame(animate);
+
+            updateRecordTimerDisplay();
 
             const now = Date.now();
             const deltaTime = (now - lastFrameTime) / 1000;
@@ -6463,7 +6424,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
         console.log('  Space - Up, Shift - Fast/Down');
         console.log('  L - Lock camera, H - Toggle UI, G - Grid');
         console.log('  J - Export JPEG, R - Record');
-        console.log('  UI dot - Toggle UI; if Rec with UI Button is on, hold to record and release to stop');
+        console.log('  UI dot - Toggle UI; if Rec with Dot is on, click to start/stop recording');
         console.log('  Controls > Help - Open hotkeys panel');
         
         animate();
