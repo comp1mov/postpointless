@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>post.pointless v0.99.1 - Point Cloud Viewer</title>
+    <title>post.pointless v0.99.2 - Point Cloud Viewer</title>
     <style>
         * {
             margin: 0;
@@ -130,8 +130,19 @@
             cursor: pointer;
             opacity: 0.6;
             transition: opacity 0.2s;
-            font-size: 10px;
             margin-left: 8px;
+            width: 18px;
+            height: 18px;
+            display: grid;
+            place-items: center;
+        }
+
+        .stats-toggle-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.78);
+            display: block;
         }
         
         #stats-toggle:hover {
@@ -211,6 +222,16 @@
             font-weight: bold;
             z-index: 2000;
             animation: pulse 1s infinite;
+        }
+
+        .recording-indicator-dot {
+            display: inline-block;
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: #fff;
+            margin-right: 8px;
+            vertical-align: 1px;
         }
         
         @keyframes pulse {
@@ -473,7 +494,7 @@
     <div id="canvas-container"></div>
     <div id="preview-frame"></div>
     <div id="safe-zone"></div>
-    <div id="recording-indicator">Ã°Å¸â€Â´ RECORDING</div>
+    <div id="recording-indicator"><span class="recording-indicator-dot" aria-hidden="true"></span>RECORDING</div>
     
     <!-- UI Toggle Button -->
     <div id="ui-toggle" title="Toggle UI"></div>
@@ -505,7 +526,7 @@
                 <div id="stats-first-line">FPS: <span id="fps">60</span>  |  Points: <span id="pointCount">0</span></div>
                 <div id="stats-second-line">No file loaded</div>
             </div>
-            <div id="stats-toggle">â—</div>
+            <div id="stats-toggle"><span class="stats-toggle-dot" aria-hidden="true"></span></div>
         </div>
         <div id="stats-content">
             <div class="stat-section">
@@ -592,7 +613,7 @@
         // ============================================
         // APP VERSION - change this in ONE place!
         // ============================================
-        const APP_VERSION = '0.99.1';
+        const APP_VERSION = '0.99.2';
         
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -1068,7 +1089,7 @@
                 'Vertical': 'Vertical',
                 'Elevator': 'Elevator',
                 'Slide': 'Slide',
-                'Fulldome (180Â°)': 'Fulldome',
+                'Fulldome (180 deg)': 'Fulldome',
             },
         });
         
@@ -2156,7 +2177,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 'Vertical': 'Vertical',
                 'Elevator': 'Elevator',
                 'Slide': 'Slide',
-                'Fulldome (180Â°)': 'Fulldome',
+                'Fulldome (180 deg)': 'Fulldome',
             },
         });
 
@@ -3498,19 +3519,19 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             
             vec3 finalColor = useVertexColors ? vColor : pointColor;
             
-            // Depth Tint - 4-color gradient (Near â†’ Mid1 â†’ Mid2 â†’ Far) with blend modes
+            // Depth Tint - 4-color gradient (Near -> Mid1 -> Mid2 -> Far) with blend modes
             if(enableDepthTint) {
                 float depthFactor = smoothstep(depthTintRangeMin, depthTintRangeMax, vDepth);
                 
                 vec3 tintColor;
                 if(depthFactor < 0.33) {
-                    // Near â†’ Mid1
+                    // Near -> Mid1
                     tintColor = mix(depthTintNear, depthTintMid1, depthFactor * 3.0);
                 } else if(depthFactor < 0.66) {
-                    // Mid1 â†’ Mid2
+                    // Mid1 -> Mid2
                     tintColor = mix(depthTintMid1, depthTintMid2, (depthFactor - 0.33) * 3.0);
                 } else {
-                    // Mid2 â†’ Far
+                    // Mid2 -> Far
                     tintColor = mix(depthTintMid2, depthTintFar, (depthFactor - 0.66) * 3.0);
                 }
                 
@@ -5722,11 +5743,11 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 effectCamera.quaternion.copy(manualCamera.quaternion);
                 
             } else if (PARAMS.cameraMode === 'Fulldome') {
-                // FULLDOME 180Â° PROJECTION
+                // FULLDOME 180 deg PROJECTION
                 // Simply copy manual camera - projection will be applied in render
                 effectCamera.position.copy(manualCamera.position);
                 effectCamera.quaternion.copy(manualCamera.quaternion);
-                effectCamera.fov = 90; // Fixed 90Â° FOV for fulldome
+                effectCamera.fov = 90; // Fixed 90 deg FOV for fulldome
                 effectCamera.updateProjectionMatrix();
             }
         }
