@@ -26,7 +26,7 @@ Vercel project:
 
 `postpointless`
 
-Pending GitHub remote:
+GitHub repository:
 
 https://github.com/comp1mov/postpointless.git
 
@@ -40,6 +40,7 @@ https://github.com/comp1mov/postpointless.git
 - `Rec with UI Button` can turn the white UI dot into a quick record start/stop control.
 - `Controls -> Help` and the `?` button next to the title open the help/hotkeys panel.
 - Project domain is `postpointless.vercel.app`; old `vercel-preview-lime.vercel.app` project domain was removed.
+- The Vercel project is connected to GitHub repository `comp1mov/postpointless` on production branch `main`.
 
 ## Local check
 
