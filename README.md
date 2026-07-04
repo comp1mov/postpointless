@@ -14,13 +14,9 @@ Public release URL:
 
 https://postpointless.vercel.app/
 
-Inspect URL:
+Vercel dashboard:
 
-https://vercel.com/gregtsv23-6635s-projects/postpointless/DKFE8QHEnjbvNUbbJX47UveEajqD
-
-Production deployment:
-
-https://postpointless-92tdddywq-gregtsv23-6635s-projects.vercel.app
+https://vercel.com/gregtsv23-6635s-projects/postpointless
 
 Vercel project:
 
