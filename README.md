@@ -16,11 +16,19 @@ https://postpointless.vercel.app/
 
 Inspect URL:
 
-https://vercel.com/gregtsv23-6635s-projects/vercel-preview/5EpufTikAmys2mEnGpzCcWGfsp8y
+https://vercel.com/gregtsv23-6635s-projects/postpointless/DKFE8QHEnjbvNUbbJX47UveEajqD
 
 Production deployment:
 
-https://vercel-preview-mp26b6n10-gregtsv23-6635s-projects.vercel.app
+https://postpointless-92tdddywq-gregtsv23-6635s-projects.vercel.app
+
+Vercel project:
+
+`postpointless`
+
+Pending GitHub remote:
+
+https://github.com/comp1mov/postpointless.git
 
 ## Notes
 
@@ -31,6 +39,7 @@ https://vercel-preview-mp26b6n10-gregtsv23-6635s-projects.vercel.app
 - Default export output is `Screen / Current View`, so image and video capture should keep the current viewport aspect.
 - `Rec with UI Button` can turn the white UI dot into a quick record start/stop control.
 - `Controls -> Help` and the `?` button next to the title open the help/hotkeys panel.
+- Project domain is `postpointless.vercel.app`; old `vercel-preview-lime.vercel.app` project domain was removed.
 
 ## Local check
 
