@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>post.pointless v0.99.4 - Point Cloud Viewer</title>
+    <title>post.pointless v0.99.5 - Point Cloud Viewer</title>
     <style>
         * {
             margin: 0;
@@ -577,7 +577,7 @@
                 </div>
 
                 <div class="help-section-title">Capture</div>
-                <div class="help-row"><div class="help-key">UI dot</div><div class="help-text">Toggle UI. If Rec with Dot is on, click once to start recording and click again to stop. Duration still cuts automatic chunks.</div></div>
+                <div class="help-row"><div class="help-key">UI dot</div><div class="help-text">Toggle UI. If Rec with Dot is on, click once to start recording and click again to stop. The second click is ignored for the first 3 seconds.</div></div>
                 <div class="help-row"><div class="help-key">R</div><div class="help-text">Start or stop video recording.</div></div>
                 <div class="help-row"><div class="help-key">J</div><div class="help-text">Export JPEG using the current output setting.</div></div>
 
@@ -613,7 +613,7 @@
         // ============================================
         // APP VERSION - change this in ONE place!
         // ============================================
-        const APP_VERSION = '0.99.4';
+        const APP_VERSION = '0.99.5';
         
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -774,6 +774,7 @@
         let recordingStopTimer = null;
         let recordingSessionId = 0;
         let recordingStopArmedAt = 0;
+        let recordingAutoStopEnabled = true;
         const UI_DOT_STOP_DELAY_MS = 3000;
         
         let currentFilename = 'No file loaded';
@@ -5802,14 +5803,18 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             recordTimerLastUpdate = now;
 
             const elapsed = PARAMS.isRecording && recordingStartTime > 0
-                ? Math.min((now - recordingStartTime) / 1000, PARAMS.videoDuration)
+                ? (now - recordingStartTime) / 1000
                 : 0;
-            PARAMS.recordTimer = `${formatRecordTimer(elapsed)} / ${formatRecordTimer(PARAMS.videoDuration)}`;
+            const limitLabel = PARAMS.isRecording && !recordingAutoStopEnabled
+                ? 'manual'
+                : formatRecordTimer(PARAMS.videoDuration);
+            PARAMS.recordTimer = `${formatRecordTimer(elapsed)} / ${limitLabel}`;
             if (recordTimerBinding) recordTimerBinding.refresh();
         }
 
         function startVideoRecording(options = {}) {
             const fromUIToggle = options && options.fromUIToggle === true;
+            const autoStop = !(options && options.autoStop === false);
 
             if (!pointCloud) {
                 alert('Load a point cloud first!');
@@ -5898,6 +5903,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 mediaRecorder = null;
                 recordingStartTime = 0;
                 recordingStopArmedAt = 0;
+                recordingAutoStopEnabled = true;
                 updateRecordTimerDisplay(true);
                 pane.refresh();
                 controlsPane.refresh();
@@ -5910,6 +5916,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             };
 
             recordingStartedByUIToggle = fromUIToggle;
+            recordingAutoStopEnabled = autoStop;
             recordingSessionId += 1;
             const activeRecordingSessionId = recordingSessionId;
             mediaRecorder.start(250);
@@ -5926,12 +5933,15 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
 
             if (recordingStopTimer) {
                 clearTimeout(recordingStopTimer);
+                recordingStopTimer = null;
             }
-            recordingStopTimer = setTimeout(() => {
-                if (PARAMS.isRecording && recordingSessionId === activeRecordingSessionId) {
-                    stopVideoRecording({ force: true });
-                }
-            }, PARAMS.videoDuration * 1000);
+            if (autoStop) {
+                recordingStopTimer = setTimeout(() => {
+                    if (PARAMS.isRecording && recordingSessionId === activeRecordingSessionId) {
+                        stopVideoRecording({ force: true });
+                    }
+                }, PARAMS.videoDuration * 1000);
+            }
 
             return true;
         }
@@ -6173,7 +6183,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 }
 
                 if (uiVisible && !PARAMS.isRecording) {
-                    const started = startVideoRecording({ fromUIToggle: true });
+                    const started = startVideoRecording({ fromUIToggle: true, autoStop: false });
                     if (started) setUIVisible(false);
                     return;
                 }
@@ -6489,7 +6499,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
         console.log('  Space - Up, Shift - Fast/Down');
         console.log('  L - Lock camera, H - Toggle UI, G - Grid');
         console.log('  J - Export JPEG, R - Record');
-        console.log('  UI dot - Toggle UI; if Rec with Dot is on, click to start/stop recording');
+        console.log('  UI dot - Toggle UI; if Rec with Dot is on, click to start/stop manual recording');
         console.log('  Controls > Help - Open hotkeys panel');
         
         animate();
