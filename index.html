@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>post.pointless v0.99.8 - Point Cloud Viewer</title>
+    <title>post.pointless v0.99.9 - Point Cloud Viewer</title>
     <style>
         * {
             margin: 0;
@@ -613,7 +613,7 @@
         // ============================================
         // APP VERSION - change this in ONE place!
         // ============================================
-        const APP_VERSION = '0.99.8';
+        const APP_VERSION = '0.99.9';
         
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -704,6 +704,8 @@
 
         // SCENE
         const scene = new THREE.Scene();
+        const contentGroup = new THREE.Group();
+        scene.add(contentGroup);
         const backgroundScene = new THREE.Scene(); // Separate scene for background only!
         const manualCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 1000);
         const effectCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 1000);
@@ -739,6 +741,7 @@
         let clonerPointObjects = [];
         let clonerLineObjects = [];
         let clonerAnimationTime = 0;
+        let scenePostAnimationTime = 0;
         let worldGrid = null;
         let backgroundGradient = null;
         let targetGizmo = null;
@@ -811,8 +814,12 @@
             clonerRadius: 1.2,
             clonerRotationStep: { x: 0, y: 30, z: 0 },
             clonerSpinSpeed: { x: 0, y: 12, z: 0 },
+            clonerNoiseVariation: 0.0,
             clonerScaleFalloff: 0.0,
             clonerPhase: 0,
+
+            sceneRotation: { x: 0, y: 0, z: 0 },
+            sceneSpin: { x: 0, y: 0, z: 0 },
             
             pointSize: 0.5,
             sizeRandomness: 0.4,
@@ -839,6 +846,7 @@
             enableNoiseFalloff: false,
             showFalloffSphere: true,
             falloffMode: 'Inside Stable',
+            falloffMix: 1.0,
             falloffRadius: 0.6,
             falloffSoftness: 0.15,
             falloffCenter: { x: 0, y: 0, z: 0 },
@@ -1539,6 +1547,13 @@
             z: { min: -180, max: 180, step: 1 },
         }).on('change', updateClonerTransforms);
 
+        clonerFolder.addBinding(PARAMS, 'clonerNoiseVariation', {
+            label: 'Noise Variation',
+            min: 0.0,
+            max: 20.0,
+            step: 0.1,
+        }).on('change', updateClonerNoiseOffsets);
+
         clonerFolder.addBinding(PARAMS, 'clonerScaleFalloff', {
             label: 'Scale Falloff',
             min: 0.0,
@@ -1552,6 +1567,26 @@
             max: 360,
             step: 1,
         }).on('change', updateCloner);
+
+        const postTransformFolder = geometryFolder.addFolder({ title: '_Post Transform', expanded: false });
+
+        postTransformFolder.addBinding(PARAMS, 'sceneRotation', {
+            label: 'Scene Rotation',
+            x: { min: -180, max: 180, step: 1 },
+            y: { min: -180, max: 180, step: 1 },
+            z: { min: -180, max: 180, step: 1 },
+        }).on('change', updateScenePostTransform);
+
+        postTransformFolder.addBinding(PARAMS, 'sceneSpin', {
+            label: 'Scene Spin',
+            x: { min: -180, max: 180, step: 1 },
+            y: { min: -180, max: 180, step: 1 },
+            z: { min: -180, max: 180, step: 1 },
+        }).on('change', updateScenePostTransform);
+
+        postTransformFolder.addButton({
+            title: 'Reset Post Rotation',
+        }).on('click', resetScenePostRotation);
 
         // AXIS CLIPPING (moved from File)
         const axisClipFolder = geometryFolder.addFolder({ title: 'Axis Clipping', expanded: false });
@@ -2158,6 +2193,13 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 'Inside Stable': 'Inside Stable',
                 'Outside Stable': 'Outside Stable',
             },
+        }).on('change', updateNoiseFalloff);
+
+        falloffFolder.addBinding(PARAMS, 'falloffMix', {
+            label: 'Mix',
+            min: 0.0,
+            max: 1.0,
+            step: 0.01,
         }).on('change', updateNoiseFalloff);
 
         falloffFolder.addBinding(PARAMS, 'falloffRadius', {
@@ -2884,7 +2926,9 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
         uniform vec3 falloffCenter;
         uniform float falloffRadius;
         uniform float falloffSoftness;
+        uniform float falloffMix;
         uniform int falloffMode;
+        uniform vec3 cloneNoiseOffset;
         uniform bool enablePixelation;
         uniform float pixelResolution;
         uniform bool enableTwist;
@@ -2957,7 +3001,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 vec3 aniScale=vec3(noiseScale*noiseScaleX,noiseScale*noiseScaleY,noiseScale*noiseScaleZ);
                 // Speed is now applied in JS time accumulation, here we just use direction
                 vec3 timeDir=vec3(noiseSpeedX,noiseSpeedY,noiseSpeedZ)*0.1;
-                vec3 flowPos=pos*aniScale+t*timeDir+seedOff;
+                vec3 flowPos=pos*aniScale+t*timeDir+seedOff+cloneNoiseOffset;
                 
                 vec3 rawNoise;
                 if(noiseType==0) rawNoise=vec3(snoise(flowPos),snoise(flowPos+vec3(123.4,0,0)),snoise(flowPos+vec3(0,456.7,0)));
@@ -2976,6 +3020,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                     float d=length(pos-falloffCenter);
                     if(falloffMode==0) nFactor=smoothstep(falloffRadius,falloffRadius+falloffSoftness,d);
                     else nFactor=1.0-smoothstep(max(0.0,falloffRadius-falloffSoftness),falloffRadius,d);
+                    nFactor=mix(1.0,nFactor,falloffMix);
                 }
                 pos+=noiseOff*nFactor;
             }
@@ -3999,7 +4044,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             clearClonerObjects();
 
             if (pointCloud) {
-                scene.remove(pointCloud);
+                removeSceneObject(pointCloud);
                 pointCloud.geometry.dispose();
                 pointsMaterial.dispose();
             }
@@ -4084,7 +4129,9 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                     )},
                     falloffRadius: { value: PARAMS.falloffRadius },
                     falloffSoftness: { value: PARAMS.falloffSoftness },
+                    falloffMix: { value: PARAMS.falloffMix },
                     falloffMode: { value: PARAMS.falloffMode === 'Inside Stable' ? 0 : 1 },
+                    cloneNoiseOffset: { value: new THREE.Vector3(0, 0, 0) },
                     
                     enableAxisClip: { value: PARAMS.enableAxisClip },
                     clipXRange: { value: new THREE.Vector2(PARAMS.clipXRange.min, PARAMS.clipXRange.max) },
@@ -4219,7 +4266,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             });
 
             pointCloud = new THREE.Points(geometry, pointsMaterial);
-            scene.add(pointCloud);
+            addContentObject(pointCloud);
             updateCloudTransform();
             updateClipping();
             updateNoiseFalloff();
@@ -4295,6 +4342,16 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             updateLines();
         }
 
+        function addContentObject(object) {
+            contentGroup.add(object);
+        }
+
+        function removeSceneObject(object) {
+            if (object && object.parent) {
+                object.parent.remove(object);
+            }
+        }
+
         function getClonerCopyCount() {
             return Math.min(
                 CLONER_MAX_COPIES,
@@ -4302,9 +4359,45 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             );
         }
 
+        function seededSignedHash(index, salt) {
+            const value = Math.sin((index + 1) * 12.9898 + salt * 78.233 + PARAMS.noiseSeed * 37.719) * 43758.5453;
+            return (value - Math.floor(value)) * 2 - 1;
+        }
+
+        function setClonerNoiseOffset(material, index) {
+            if (!material || !material.uniforms || !material.uniforms.cloneNoiseOffset) return;
+
+            const variation = Math.max(0, PARAMS.clonerNoiseVariation || 0);
+            material.uniforms.cloneNoiseOffset.value.set(
+                seededSignedHash(index, 1) * variation,
+                seededSignedHash(index, 2) * variation,
+                seededSignedHash(index, 3) * variation
+            );
+        }
+
+        function createClonerMaterial(sourceMaterial, index) {
+            const material = sourceMaterial.clone();
+            material.uniforms = {
+                ...sourceMaterial.uniforms,
+                cloneNoiseOffset: { value: new THREE.Vector3() }
+            };
+            setClonerNoiseOffset(material, index);
+            return material;
+        }
+
+        function updateClonerNoiseOffsets() {
+            for (const object of clonerPointObjects) {
+                setClonerNoiseOffset(object.material, object.userData.clonerIndex || 0);
+            }
+            for (const object of clonerLineObjects) {
+                setClonerNoiseOffset(object.material, object.userData.clonerIndex || 0);
+            }
+        }
+
         function clearClonerObjectList(objects) {
             for (const object of objects) {
-                scene.remove(object);
+                removeSceneObject(object);
+                if (object.material) object.material.dispose();
             }
             objects.length = 0;
         }
@@ -4325,13 +4418,13 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             if (!sourceObject) return;
             const clone = sourceObject.clone(false);
             clone.geometry = sourceObject.geometry;
-            clone.material = sourceObject.material;
+            clone.material = createClonerMaterial(sourceObject.material, index);
             clone.frustumCulled = false;
             clone.renderOrder = sourceObject.renderOrder;
             clone.visible = true;
             clone.userData.clonerIndex = index;
             targetList.push(clone);
-            scene.add(clone);
+            addContentObject(clone);
         }
 
         function updateCloner() {
@@ -4422,6 +4515,15 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             for (let i = 0; i < clonerLineObjects.length; i++) {
                 applyClonerTransform(clonerLineObjects[i], i, count);
             }
+            updateClonerNoiseOffsets();
+        }
+
+        function updateScenePostTransform() {
+            contentGroup.rotation.set(
+                (PARAMS.sceneRotation.x + PARAMS.sceneSpin.x * scenePostAnimationTime) * Math.PI / 180,
+                (PARAMS.sceneRotation.y + PARAMS.sceneSpin.y * scenePostAnimationTime) * Math.PI / 180,
+                (PARAMS.sceneRotation.z + PARAMS.sceneSpin.z * scenePostAnimationTime) * Math.PI / 180
+            );
         }
 
         function updateCloudTransform() {
@@ -4445,6 +4547,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             // Sync to lines
             syncLineUniforms();
             updateClonerTransforms();
+            updateScenePostTransform();
             
             // Also update clip plane positions if they exist
             updateClipping();
@@ -4727,6 +4830,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             pointsMaterial.uniforms.falloffMode.value = PARAMS.falloffMode === 'Inside Stable' ? 0 : 1;
             pointsMaterial.uniforms.falloffRadius.value = PARAMS.falloffRadius;
             pointsMaterial.uniforms.falloffSoftness.value = PARAMS.falloffSoftness;
+            pointsMaterial.uniforms.falloffMix.value = PARAMS.falloffMix;
             pointsMaterial.uniforms.falloffCenter.value.set(
                 PARAMS.falloffCenter.x,
                 PARAMS.falloffCenter.y,
@@ -4756,6 +4860,9 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             } else if (falloffSphereWireframe) {
                 falloffSphereWireframe.visible = false;
             }
+
+            syncLineUniforms();
+            updateClonerTransforms();
         }
 
         function updatePointMaterial() {
@@ -4887,7 +4994,8 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 'noiseScale', 'noiseScaleX', 'noiseScaleY', 'noiseScaleZ',
                 'noiseSpeed', 'noiseSpeedX', 'noiseSpeedY', 'noiseSpeedZ',
                 'scatterAmount', 'time', 'noiseSeed',
-                'enableNoiseFalloff', 'falloffCenter', 'falloffRadius', 'falloffSoftness', 'falloffMode',
+                'enableNoiseFalloff', 'falloffCenter', 'falloffRadius', 'falloffSoftness', 'falloffMix', 'falloffMode',
+                'cloneNoiseOffset',
                 'enablePixelation', 'pixelResolution',
                 'enableTwist', 'twistAmount', 'twistAxis',
                 'enableBend', 'bendAmount', 'bendAxis',
@@ -4907,7 +5015,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
 
             // Remove existing lines
             if (linesObject) {
-                scene.remove(linesObject);
+                removeSceneObject(linesObject);
                 linesObject.geometry.dispose();
                 linesObject = null;
             }
@@ -5127,7 +5235,9 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                     falloffCenter: { value: new THREE.Vector3(PARAMS.falloffCenter.x, PARAMS.falloffCenter.y, PARAMS.falloffCenter.z) },
                     falloffRadius: { value: PARAMS.falloffRadius },
                     falloffSoftness: { value: PARAMS.falloffSoftness },
+                    falloffMix: { value: PARAMS.falloffMix },
                     falloffMode: { value: PARAMS.falloffMode === 'Inside Stable' ? 0 : 1 },
+                    cloneNoiseOffset: { value: new THREE.Vector3(0, 0, 0) },
                     starCenter: { value: new THREE.Vector3(PARAMS.starCenter.x, PARAMS.starCenter.y, PARAMS.starCenter.z) },
                     starCenterBase: { value: new THREE.Vector3(PARAMS.starCenter.x, PARAMS.starCenter.y, PARAMS.starCenter.z) },
                     starWiggle: { value: new THREE.Vector3(0, 0, 0) },
@@ -5164,7 +5274,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             linesObject.renderOrder = 1; // Render after points
             // Sync scale with point cloud
             linesObject.scale.set(PARAMS.cloudScale.x, PARAMS.cloudScale.y, PARAMS.cloudScale.z);
-            scene.add(linesObject);
+            addContentObject(linesObject);
             updateCloner();
             
             console.log(`Created ${numLines} lines with GPU transform sync`);
@@ -5228,7 +5338,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
         function createTrails() {
             // Remove existing
             if (trailsObject) {
-                scene.remove(trailsObject);
+                removeSceneObject(trailsObject);
                 trailsObject.geometry.dispose();
                 trailsObject = null;
             }
@@ -5356,7 +5466,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             trailsObject = new THREE.LineSegments(geometry, trailsMaterial);
             trailsObject.frustumCulled = false;
             trailsObject.renderOrder = 3;
-            scene.add(trailsObject);
+            addContentObject(trailsObject);
             updateClonerSourceVisibility();
             
             trailFreezeIndex = 0;
@@ -6255,6 +6365,18 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             pane.refresh();
         }
 
+        function resetScenePostRotation() {
+            PARAMS.sceneRotation.x = 0;
+            PARAMS.sceneRotation.y = 0;
+            PARAMS.sceneRotation.z = 0;
+            PARAMS.sceneSpin.x = 0;
+            PARAMS.sceneSpin.y = 0;
+            PARAMS.sceneSpin.z = 0;
+            scenePostAnimationTime = 0;
+            updateScenePostTransform();
+            pane.refresh();
+        }
+
         // WASD NAVIGATION STATE
         const wasdKeys = { w: false, a: false, s: false, d: false, q: false, e: false, shift: false, space: false };
         const wasdSpeed = 0.012;  // Slower base speed
@@ -6682,6 +6804,10 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 clonerAnimationTime += timeStep;
                 updateClonerTransforms();
             }
+
+            const scenePostTimeStep = PARAMS.isRecording ? (1.0 / PARAMS.videoFPS) : deltaTime;
+            scenePostAnimationTime += scenePostTimeStep;
+            updateScenePostTransform();
             
             // UPDATE TRAILS
             updateTrails();
