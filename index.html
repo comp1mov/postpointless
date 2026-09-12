@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>post.pointless v0.99.6 - Point Cloud Viewer</title>
+    <title>post.pointless v0.99.7 - Point Cloud Viewer</title>
     <style>
         * {
             margin: 0;
@@ -613,7 +613,7 @@
         // ============================================
         // APP VERSION - change this in ONE place!
         // ============================================
-        const APP_VERSION = '0.99.6';
+        const APP_VERSION = '0.99.7';
         
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -736,9 +736,13 @@
         let pointsMaterial = null;
         let linesObject = null;
         let linesMaterial = null;
+        let clonerPointObjects = [];
+        let clonerLineObjects = [];
+        let clonerAnimationTime = 0;
         let worldGrid = null;
         let backgroundGradient = null;
         let targetGizmo = null;
+        const CLONER_MAX_COPIES = 40;
         
         // Trails (GPU ribbon with frozen time)
         let trailsObject = null;
@@ -798,6 +802,17 @@
             cloudScale: { x: 1.0, y: 1.0, z: 1.0 },
             pointDensity: 1.0, // 1.0 = 100%, 0.1 = 10%
             activePointCount: 0,
+
+            enableCloner: false,
+            clonerMode: 'Radial',
+            clonerCopies: 6,
+            clonerIncludeSource: true,
+            clonerSpacing: { x: 0.8, y: 0.0, z: 0.8 },
+            clonerRadius: 1.2,
+            clonerRotationStep: { x: 0, y: 30, z: 0 },
+            clonerSpinSpeed: { x: 0, y: 12, z: 0 },
+            clonerScaleFalloff: 0.0,
+            clonerPhase: 0,
             
             pointSize: 0.5,
             sizeRandomness: 0.4,
@@ -1295,6 +1310,7 @@
                         updateBackground();
                         updateNoiseFalloff();
                         if (PARAMS.enableLines) updateLines();
+                        updateCloner();
                         
                         console.log('Preset loaded!');
                     } catch (err) {
@@ -1461,6 +1477,77 @@
             y: { min: 0.1, max: 3.0, step: 0.01 },
             z: { min: 0.1, max: 3.0, step: 0.01 },
         }).on('change', updateCloudTransform);
+
+        const clonerFolder = geometryFolder.addFolder({ title: '_Cloner', expanded: false });
+
+        clonerFolder.addBinding(PARAMS, 'enableCloner', {
+            label: 'Enable',
+        }).on('change', updateCloner);
+
+        clonerFolder.addBinding(PARAMS, 'clonerMode', {
+            label: 'Mode',
+            options: {
+                'Linear': 'Linear',
+                'Radial': 'Radial',
+                'Grid': 'Grid',
+                'Mirror X': 'Mirror X',
+                'Mirror Y': 'Mirror Y',
+                'Mirror Z': 'Mirror Z',
+            },
+        }).on('change', updateCloner);
+
+        clonerFolder.addBinding(PARAMS, 'clonerCopies', {
+            label: 'Copies',
+            min: 1,
+            max: CLONER_MAX_COPIES,
+            step: 1,
+        }).on('change', updateCloner);
+
+        clonerFolder.addBinding(PARAMS, 'clonerIncludeSource', {
+            label: 'Source',
+        }).on('change', updateCloner);
+
+        clonerFolder.addBinding(PARAMS, 'clonerSpacing', {
+            label: 'Spacing',
+            x: { min: -4.0, max: 4.0, step: 0.01 },
+            y: { min: -4.0, max: 4.0, step: 0.01 },
+            z: { min: -4.0, max: 4.0, step: 0.01 },
+        }).on('change', updateCloner);
+
+        clonerFolder.addBinding(PARAMS, 'clonerRadius', {
+            label: 'Radius',
+            min: 0.0,
+            max: 4.0,
+            step: 0.01,
+        }).on('change', updateCloner);
+
+        clonerFolder.addBinding(PARAMS, 'clonerRotationStep', {
+            label: 'Rotate Step',
+            x: { min: -180, max: 180, step: 1 },
+            y: { min: -180, max: 180, step: 1 },
+            z: { min: -180, max: 180, step: 1 },
+        }).on('change', updateCloner);
+
+        clonerFolder.addBinding(PARAMS, 'clonerSpinSpeed', {
+            label: 'Spin Speed',
+            x: { min: -180, max: 180, step: 1 },
+            y: { min: -180, max: 180, step: 1 },
+            z: { min: -180, max: 180, step: 1 },
+        }).on('change', updateClonerTransforms);
+
+        clonerFolder.addBinding(PARAMS, 'clonerScaleFalloff', {
+            label: 'Scale Falloff',
+            min: 0.0,
+            max: 0.95,
+            step: 0.01,
+        }).on('change', updateCloner);
+
+        clonerFolder.addBinding(PARAMS, 'clonerPhase', {
+            label: 'Phase',
+            min: -360,
+            max: 360,
+            step: 1,
+        }).on('change', updateCloner);
 
         // AXIS CLIPPING (moved from File)
         const axisClipFolder = geometryFolder.addFolder({ title: 'Axis Clipping', expanded: false });
@@ -3447,7 +3534,8 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             
             // SIZE BY DISTANCE
             if (sizeByDistance) {
-                float dist = length(cameraPosition - pos);
+                vec3 worldPos = (modelMatrix * vec4(pos, 1.0)).xyz;
+                float dist = length(cameraPosition - worldPos);
                 float t = clamp((dist - sizeDistanceMin) / max(0.001, sizeDistanceMax - sizeDistanceMin), 0.0, 1.0);
                 float distMult = mix(sizeAtMin, sizeAtMax, t);
                 finalSize *= distMult;
@@ -3904,6 +3992,8 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
         }
 
         function createPointCloud(geometry) {
+            clearClonerObjects();
+
             if (pointCloud) {
                 scene.remove(pointCloud);
                 pointCloud.geometry.dispose();
@@ -4201,6 +4291,135 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             updateLines();
         }
 
+        function getClonerCopyCount() {
+            return Math.min(
+                CLONER_MAX_COPIES,
+                Math.max(1, Math.floor(PARAMS.clonerCopies || 1))
+            );
+        }
+
+        function clearClonerObjectList(objects) {
+            for (const object of objects) {
+                scene.remove(object);
+            }
+            objects.length = 0;
+        }
+
+        function clearClonerObjects() {
+            clearClonerObjectList(clonerPointObjects);
+            clearClonerObjectList(clonerLineObjects);
+        }
+
+        function updateClonerSourceVisibility() {
+            const sourceVisible = !PARAMS.enableCloner || PARAMS.clonerIncludeSource;
+            if (pointCloud) pointCloud.visible = sourceVisible;
+            if (linesObject) linesObject.visible = sourceVisible;
+            if (trailsObject) trailsObject.visible = sourceVisible;
+        }
+
+        function createSharedClonerObject(sourceObject, index, targetList) {
+            if (!sourceObject) return;
+            const clone = sourceObject.clone(false);
+            clone.geometry = sourceObject.geometry;
+            clone.material = sourceObject.material;
+            clone.frustumCulled = false;
+            clone.renderOrder = sourceObject.renderOrder;
+            clone.visible = true;
+            clone.userData.clonerIndex = index;
+            targetList.push(clone);
+            scene.add(clone);
+        }
+
+        function updateCloner() {
+            clearClonerObjects();
+            updateClonerSourceVisibility();
+
+            if (!PARAMS.enableCloner || !pointCloud) return;
+
+            const count = getClonerCopyCount();
+            for (let i = 0; i < count; i++) {
+                createSharedClonerObject(pointCloud, i, clonerPointObjects);
+                if (linesObject) createSharedClonerObject(linesObject, i, clonerLineObjects);
+            }
+
+            updateClonerSourceVisibility();
+            updateClonerTransforms();
+        }
+
+        function applyClonerTransform(object, index, count) {
+            const copyNumber = index + 1;
+            const spacing = PARAMS.clonerSpacing;
+            const rotationStep = PARAMS.clonerRotationStep;
+            const spinSpeed = PARAMS.clonerSpinSpeed;
+            const phase = PARAMS.clonerPhase * Math.PI / 180;
+            const mode = PARAMS.clonerMode;
+
+            const position = new THREE.Vector3();
+            const mirrorScale = new THREE.Vector3(1, 1, 1);
+            let rx = rotationStep.x * copyNumber;
+            let ry = rotationStep.y * copyNumber;
+            let rz = rotationStep.z * copyNumber;
+
+            if (mode === 'Radial') {
+                const angle = phase + (Math.PI * 2 * index) / Math.max(1, count);
+                position.set(
+                    Math.cos(angle) * PARAMS.clonerRadius,
+                    spacing.y * index,
+                    Math.sin(angle) * PARAMS.clonerRadius
+                );
+                ry += angle * 180 / Math.PI;
+            } else if (mode === 'Grid') {
+                const columns = Math.ceil(Math.sqrt(count));
+                const rows = Math.ceil(count / columns);
+                const col = index % columns;
+                const row = Math.floor(index / columns);
+                position.set(
+                    (col - (columns - 1) * 0.5) * spacing.x,
+                    spacing.y * row,
+                    (row - (rows - 1) * 0.5) * spacing.z
+                );
+            } else if (mode === 'Mirror X' || mode === 'Mirror Y' || mode === 'Mirror Z') {
+                position.set(spacing.x * copyNumber, spacing.y * copyNumber, spacing.z * copyNumber);
+                if (mode === 'Mirror X') mirrorScale.x = -1;
+                if (mode === 'Mirror Y') mirrorScale.y = -1;
+                if (mode === 'Mirror Z') mirrorScale.z = -1;
+            } else {
+                position.set(spacing.x * copyNumber, spacing.y * copyNumber, spacing.z * copyNumber);
+            }
+
+            rx += spinSpeed.x * clonerAnimationTime;
+            ry += spinSpeed.y * clonerAnimationTime;
+            rz += spinSpeed.z * clonerAnimationTime;
+
+            const falloff = 1.0 - PARAMS.clonerScaleFalloff * (copyNumber / Math.max(1, count));
+            const scale = Math.max(0.05, falloff);
+
+            object.position.copy(position);
+            object.rotation.set(
+                rx * Math.PI / 180,
+                ry * Math.PI / 180,
+                rz * Math.PI / 180
+            );
+            object.scale.set(
+                PARAMS.cloudScale.x * scale * mirrorScale.x,
+                PARAMS.cloudScale.y * scale * mirrorScale.y,
+                PARAMS.cloudScale.z * scale * mirrorScale.z
+            );
+        }
+
+        function updateClonerTransforms() {
+            updateClonerSourceVisibility();
+            if (!PARAMS.enableCloner) return;
+
+            const count = getClonerCopyCount();
+            for (let i = 0; i < clonerPointObjects.length; i++) {
+                applyClonerTransform(clonerPointObjects[i], i, count);
+            }
+            for (let i = 0; i < clonerLineObjects.length; i++) {
+                applyClonerTransform(clonerLineObjects[i], i, count);
+            }
+        }
+
         function updateCloudTransform() {
             if (!pointCloud) return;
             // Rotation now applied in vertex shader (before noise/clipping)
@@ -4221,6 +4440,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             
             // Sync to lines
             syncLineUniforms();
+            updateClonerTransforms();
             
             // Also update clip plane positions if they exist
             updateClipping();
@@ -4679,6 +4899,8 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
         }
 
         function updateLines() {
+            clearClonerObjectList(clonerLineObjects);
+
             // Remove existing lines
             if (linesObject) {
                 scene.remove(linesObject);
@@ -4690,7 +4912,10 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 linesMaterial = null;
             }
 
-            if (!PARAMS.enableLines || !pointCloud) return;
+            if (!PARAMS.enableLines || !pointCloud) {
+                updateCloner();
+                return;
+            }
 
             const positions = pointCloud.geometry.attributes.position.array;
             const colors = pointCloud.geometry.attributes.color ? pointCloud.geometry.attributes.color.array : null;
@@ -4936,6 +5161,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             // Sync scale with point cloud
             linesObject.scale.set(PARAMS.cloudScale.x, PARAMS.cloudScale.y, PARAMS.cloudScale.z);
             scene.add(linesObject);
+            updateCloner();
             
             console.log(`Created ${numLines} lines with GPU transform sync`);
         }
@@ -5127,6 +5353,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             trailsObject.frustumCulled = false;
             trailsObject.renderOrder = 3;
             scene.add(trailsObject);
+            updateClonerSourceVisibility();
             
             trailFreezeIndex = 0;
             trailFrameCounter = 0;
@@ -6447,6 +6674,9 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                         pointsMaterial.uniforms.sliceFade.value = t;
                     }
                 }
+
+                clonerAnimationTime += timeStep;
+                updateClonerTransforms();
             }
             
             // UPDATE TRAILS
