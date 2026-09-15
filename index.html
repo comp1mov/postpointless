@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>post.pointless v0.99.17 - Point Cloud Viewer</title>
+    <title>post.pointless v0.99.18 - Point Cloud Viewer</title>
     <style>
         * {
             margin: 0;
@@ -641,7 +641,7 @@
         // ============================================
         // APP VERSION - change this in ONE place!
         // ============================================
-        const APP_VERSION = '0.99.17';
+        const APP_VERSION = '0.99.18';
         
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -820,6 +820,8 @@
         let jsZipPromise = null;
         let frameSequenceExporting = false;
         let renderLoopInfoBinding = null;
+        let pngSequenceDirectoryHandle = null;
+        let pngFolderInfoBinding = null;
         
         let currentFilename = 'No file loaded';
 
@@ -1054,6 +1056,7 @@
             recWithUIButton: true,
             recordTimer: '00:00 / 00:04',
             renderLoopInfo: 'Manual: no camera loop',
+            pngFolderInfo: localStorage.getItem('postpointless:pngFolderLabel') || 'No folder selected',
 
             resolution: 'Screen',
             showPreviewFrame: false,
@@ -1258,13 +1261,23 @@
 
         exportFolder.addButton({
             title: 'Export PNG Sequence ZIP (lossless fixed frames)',
-            label: 'PNG Seq',
+            label: 'PNG ZIP',
         }).on('click', exportPNGSequence);
 
         exportFolder.addButton({
-            title: 'Export PNG Sequence to Folder',
+            title: 'Choose PNG Sequence Folder',
+            label: 'Folder',
+        }).on('click', choosePNGSequenceFolder);
+
+        pngFolderInfoBinding = exportFolder.addBinding(PARAMS, 'pngFolderInfo', {
             label: 'PNG Folder',
-        }).on('click', exportPNGSequenceToFolder);
+            readonly: true,
+        });
+
+        exportFolder.addButton({
+            title: 'Render PNG Sequence to Selected Folder',
+            label: 'Render Seq',
+        }).on('click', exportPNGSequenceToSelectedFolder);
 
         exportFolder.addBlade({ view: 'separator' });
 
@@ -1345,42 +1358,16 @@
             title: 'STOP Recording',
         }).on('click', stopVideoRecording);
 
-        // PRESETS SECTION
-        const presetsFolder = controlsPane.addFolder({ title: 'Presets', expanded: false });
+        // PROJECT SECTION
+        const presetsFolder = controlsPane.addFolder({ title: 'Project', expanded: false });
         
         presetsFolder.addButton({
-            title: 'Save Preset',
+            title: 'Save Project',
             label: 'Save',
-        }).on('click', () => {
-            // Collect all saveable parameters
-            const preset = {};
-            const skipKeys = ['isRecording', 'fileName', 'sceneSource', 'activePoints', 'renderName', 'lockCamera', 'renderLoopInfo'];
-            
-            for (const key in PARAMS) {
-                if (skipKeys.includes(key)) continue;
-                const val = PARAMS[key];
-                // Handle objects with x,y,z or min,max
-                if (val && typeof val === 'object' && !Array.isArray(val)) {
-                    preset[key] = { ...val };
-                } else {
-                    preset[key] = val;
-                }
-            }
-            
-            // Download as JSON
-            const json = JSON.stringify(preset, null, 2);
-            const blob = new Blob([json], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `preset_${Date.now()}.json`;
-            a.click();
-            URL.revokeObjectURL(url);
-            console.log('Preset saved!');
-        });
+        }).on('click', saveProjectPreset);
         
         presetsFolder.addButton({
-            title: 'Load Preset',
+            title: 'Load Project',
             label: 'Load',
         }).on('click', () => {
             const input = document.createElement('input');
@@ -1389,48 +1376,7 @@
             input.onchange = (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
-                
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                    try {
-                        const preset = JSON.parse(ev.target.result);
-                        
-                        // Apply only parameters that exist in preset
-                        for (const key in preset) {
-                            if (key in PARAMS) {
-                                const val = preset[key];
-                                if (val && typeof val === 'object' && !Array.isArray(val)) {
-                                    // Handle objects (like xyz, min/max)
-                                    if (PARAMS[key] && typeof PARAMS[key] === 'object') {
-                                        Object.assign(PARAMS[key], val);
-                                    }
-                                } else {
-                                    PARAMS[key] = val;
-                                }
-                            }
-                        }
-                        
-                        // Refresh UI and apply changes
-                        pane.refresh();
-                        updatePointMaterial();
-                        updateCloudTransform();
-                        updateClipping();
-                        updateSlice();
-                        updateGrid();
-                        updateBackground();
-                        updateNoiseFalloff();
-                        updateRecordTimerDisplay(true);
-                        updateRenderLoopInfo(true);
-                        if (PARAMS.enableLines) updateLines();
-                        updateCloner();
-                        
-                        console.log('Preset loaded!');
-                    } catch (err) {
-                        console.error('Failed to load preset:', err);
-                        alert('Failed to load preset file');
-                    }
-                };
-                reader.readAsText(file);
+                loadProjectPreset(file);
             };
             input.click();
         });
@@ -5062,6 +5008,9 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             pointsMaterial.uniforms.depthTintFar.value.set(PARAMS.depthTintFar);
             pointsMaterial.uniforms.depthTintRangeMin.value = PARAMS.depthTintRangeMin;
             pointsMaterial.uniforms.depthTintRangeMax.value = PARAMS.depthTintRangeMax;
+            if (pointsMaterial.uniforms.depthTintFixColors) {
+                pointsMaterial.uniforms.depthTintFixColors.value = PARAMS.depthTintFixColors;
+            }
             
             // Depth Tint blend mode
             const depthBlendMap = { 'Normal': 0, 'Multiply': 1, 'Screen': 2, 'Overlay': 3 };
@@ -6108,6 +6057,322 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             return cleaned || fallback;
         }
 
+        const PROJECT_SCHEMA_VERSION = 2;
+        const PROJECT_PARAM_SKIP_KEYS = new Set([
+            'isRecording',
+            'recordTimer',
+            'renderLoopInfo',
+            'pngFolderInfo',
+            'activePointCount',
+            'filename',
+            'fileScanner',
+            'depthTintFixedMatrix'
+        ]);
+
+        function serializeVector3(vector) {
+            return { x: vector.x, y: vector.y, z: vector.z };
+        }
+
+        function serializeQuaternion(quaternion) {
+            return { x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w };
+        }
+
+        function applyVector3(target, value) {
+            if (!target || !value) return false;
+            if (Array.isArray(value) && value.length >= 3) {
+                target.set(Number(value[0]) || 0, Number(value[1]) || 0, Number(value[2]) || 0);
+                return true;
+            }
+            if (typeof value === 'object') {
+                target.set(Number(value.x) || 0, Number(value.y) || 0, Number(value.z) || 0);
+                return true;
+            }
+            return false;
+        }
+
+        function applyQuaternion(target, value) {
+            if (!target || !value || typeof value !== 'object') return false;
+            target.set(
+                Number(value.x) || 0,
+                Number(value.y) || 0,
+                Number(value.z) || 0,
+                Number(value.w) || 1
+            );
+            return true;
+        }
+
+        function serializeMatrix4(matrix) {
+            return matrix && matrix.elements ? Array.from(matrix.elements) : null;
+        }
+
+        function matrix4FromSerialized(value) {
+            const elements = Array.isArray(value)
+                ? value
+                : (value && Array.isArray(value.elements) ? value.elements : null);
+            if (!elements || elements.length !== 16) return null;
+
+            const matrix = new THREE.Matrix4();
+            matrix.fromArray(elements.map(Number));
+            return matrix;
+        }
+
+        function cloneProjectValue(value) {
+            if (value instanceof THREE.Matrix4) {
+                return { type: 'Matrix4', elements: serializeMatrix4(value) };
+            }
+            if (value && typeof value === 'object') {
+                return JSON.parse(JSON.stringify(value));
+            }
+            return value;
+        }
+
+        function getProjectParams() {
+            const params = {};
+            for (const key in PARAMS) {
+                if (PROJECT_PARAM_SKIP_KEYS.has(key)) continue;
+                params[key] = cloneProjectValue(PARAMS[key]);
+            }
+            return params;
+        }
+
+        function captureProjectCamera() {
+            return {
+                manualPosition: serializeVector3(manualCamera.position),
+                manualQuaternion: serializeQuaternion(manualCamera.quaternion),
+                target: serializeVector3(controls.target),
+                savedPosition: serializeVector3(savedCameraPos),
+                savedTarget: serializeVector3(savedCameraTarget),
+                fov: manualCamera.fov,
+                near: manualCamera.near,
+                far: manualCamera.far,
+                depthTintFixedMatrix: serializeMatrix4(PARAMS.depthTintFixedMatrix)
+            };
+        }
+
+        function captureProjectAnimation() {
+            return {
+                cameraAnimationTime,
+                clonerAnimationTime,
+                scenePostAnimationTime,
+                wiggleTime,
+                sliceDirection
+            };
+        }
+
+        function createProjectPayload() {
+            return {
+                app: 'post.pointless',
+                kind: 'project',
+                schemaVersion: PROJECT_SCHEMA_VERSION,
+                appVersion: APP_VERSION,
+                createdAt: new Date().toISOString(),
+                source: {
+                    filename: PARAMS.filename,
+                    scanner: PARAMS.fileScanner,
+                    totalPointCount
+                },
+                params: getProjectParams(),
+                camera: captureProjectCamera(),
+                animation: captureProjectAnimation()
+            };
+        }
+
+        function downloadJSONFile(payload, filename) {
+            const json = JSON.stringify(payload, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 30000);
+        }
+
+        function getProjectFilename() {
+            const baseName = PARAMS.renderName && PARAMS.renderName.trim() && PARAMS.renderName !== 'untitled'
+                ? PARAMS.renderName
+                : PARAMS.filename.replace(/\.[^/.]+$/, '');
+            const safeName = sanitizeExportFilePart(baseName, 'post_pointless_project');
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+            return `post_pointless_project_${safeName}_${timestamp}.json`;
+        }
+
+        function saveProjectPreset() {
+            downloadJSONFile(createProjectPayload(), getProjectFilename());
+            console.log('Project saved!');
+        }
+
+        function normalizeProjectPayload(raw) {
+            if (raw && typeof raw === 'object' && raw.params && typeof raw.params === 'object') {
+                return raw;
+            }
+
+            return {
+                app: 'post.pointless',
+                kind: 'legacy-preset',
+                schemaVersion: 1,
+                params: raw && typeof raw === 'object' ? raw : {}
+            };
+        }
+
+        function applyProjectParams(params) {
+            if (!params || typeof params !== 'object') return { pointDensityChanged: false };
+
+            let pointDensityChanged = false;
+            for (const key in params) {
+                if (!(key in PARAMS)) continue;
+
+                const value = params[key];
+                if (key === 'depthTintFixedMatrix') {
+                    PARAMS.depthTintFixedMatrix = matrix4FromSerialized(value);
+                    continue;
+                }
+                if (PROJECT_PARAM_SKIP_KEYS.has(key)) continue;
+
+                if (key === 'pointDensity' && value !== PARAMS.pointDensity) {
+                    pointDensityChanged = true;
+                }
+
+                if (
+                    value &&
+                    typeof value === 'object' &&
+                    !Array.isArray(value) &&
+                    PARAMS[key] &&
+                    typeof PARAMS[key] === 'object' &&
+                    !(PARAMS[key] instanceof THREE.Matrix4)
+                ) {
+                    Object.assign(PARAMS[key], cloneProjectValue(value));
+                } else {
+                    PARAMS[key] = cloneProjectValue(value);
+                }
+            }
+
+            return { pointDensityChanged };
+        }
+
+        function applyProjectCamera(cameraState) {
+            if (!cameraState || typeof cameraState !== 'object') return;
+
+            applyVector3(manualCamera.position, cameraState.manualPosition || cameraState.position);
+            applyVector3(controls.target, cameraState.target);
+            applyVector3(savedCameraPos, cameraState.savedPosition);
+            applyVector3(savedCameraTarget, cameraState.savedTarget);
+
+            if (Number.isFinite(cameraState.fov)) PARAMS.fov = cameraState.fov;
+            if (Number.isFinite(cameraState.near)) PARAMS.nearClip = cameraState.near;
+            if (Number.isFinite(cameraState.far)) PARAMS.farClip = cameraState.far;
+
+            if (cameraState.manualQuaternion) {
+                applyQuaternion(manualCamera.quaternion, cameraState.manualQuaternion);
+            } else {
+                manualCamera.lookAt(controls.target);
+            }
+
+            PARAMS.depthTintFixedMatrix = matrix4FromSerialized(cameraState.depthTintFixedMatrix);
+            controls.update();
+        }
+
+        function applyProjectAnimation(animationState) {
+            if (!animationState || typeof animationState !== 'object') return;
+
+            if (Number.isFinite(animationState.cameraAnimationTime)) cameraAnimationTime = animationState.cameraAnimationTime;
+            if (Number.isFinite(animationState.clonerAnimationTime)) clonerAnimationTime = animationState.clonerAnimationTime;
+            if (Number.isFinite(animationState.scenePostAnimationTime)) scenePostAnimationTime = animationState.scenePostAnimationTime;
+            if (Number.isFinite(animationState.wiggleTime)) wiggleTime = animationState.wiggleTime;
+            if (Number.isFinite(animationState.sliceDirection)) sliceDirection = animationState.sliceDirection >= 0 ? 1 : -1;
+        }
+
+        function applyCameraSettingsToScene() {
+            manualCamera.fov = Number(PARAMS.fov) || 75;
+            manualCamera.near = Math.max(0.001, Number(PARAMS.nearClip) || 0.01);
+            manualCamera.far = Math.max(manualCamera.near + 0.001, Number(PARAMS.farClip) || 50);
+            manualCamera.updateProjectionMatrix();
+
+            effectCamera.fov = manualCamera.fov;
+            effectCamera.near = manualCamera.near;
+            effectCamera.far = manualCamera.far;
+            effectCamera.position.copy(manualCamera.position);
+            effectCamera.quaternion.copy(manualCamera.quaternion);
+            effectCamera.updateProjectionMatrix();
+
+            orthoCamera.far = manualCamera.far;
+            orthoCamera.updateProjectionMatrix();
+            if (pointsMaterial && pointsMaterial.uniforms.cameraFar) {
+                pointsMaterial.uniforms.cameraFar.value = manualCamera.far;
+            }
+        }
+
+        function applyDepthTintFixedMatrix() {
+            if (!pointsMaterial || !pointsMaterial.uniforms.depthTintFixedMatrix) return;
+
+            if (!PARAMS.depthTintFixedMatrix && PARAMS.depthTintFixColors) {
+                manualCamera.updateMatrixWorld(true);
+                PARAMS.depthTintFixedMatrix = manualCamera.matrixWorldInverse.clone();
+            }
+
+            if (PARAMS.depthTintFixedMatrix) {
+                pointsMaterial.uniforms.depthTintFixedMatrix.value.copy(PARAMS.depthTintFixedMatrix);
+            }
+        }
+
+        function applyProjectSideEffects(options = {}) {
+            controls.enabled = !PARAMS.lockCamera;
+            transitionMode = 'None';
+            previousCameraMode = PARAMS.cameraMode;
+            applyCameraSettingsToScene();
+            updateCameraProjection();
+
+            if (options.pointDensityChanged && pointCloud && originalPositions && originalColors) {
+                decimatePoints();
+            }
+
+            updatePointMaterial();
+            updatePostFX();
+            applyDepthTintFixedMatrix();
+            updateCloudTransform();
+            updateScenePostTransform();
+            updateSlice();
+            updateLines();
+            updateCloner();
+            updateClonerTransforms();
+            updateClonerNoiseOffsets();
+            updateBackground();
+            updateHelpersVisibility();
+            updatePreviewFrame();
+            updateRecordTimerDisplay(true);
+            updateRenderLoopInfo(true);
+            updateUIToggleMode();
+
+            hasCameraSpeedSample = false;
+            pane.refresh();
+            controlsPane.refresh();
+            renderCurrentFrame();
+        }
+
+        function applyProjectPayload(raw) {
+            const payload = normalizeProjectPayload(raw);
+            const result = applyProjectParams(payload.params);
+            applyProjectCamera(payload.camera);
+            applyProjectAnimation(payload.animation);
+            applyProjectSideEffects(result);
+            console.log(payload.kind === 'legacy-preset' ? 'Legacy preset loaded!' : 'Project loaded!');
+        }
+
+        function loadProjectPreset(file) {
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                try {
+                    applyProjectPayload(JSON.parse(ev.target.result));
+                } catch (err) {
+                    console.error('Failed to load project:', err);
+                    alert('Failed to load project file');
+                }
+            };
+            reader.readAsText(file);
+        }
+
         function getPNGSequenceSettings() {
             const fps = Math.max(1, Number(PARAMS.videoFPS) || 60);
             const duration = Math.max(0.1, Number(PARAMS.videoDuration) || 1);
@@ -6258,6 +6523,148 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             const writable = await fileHandle.createWritable();
             await writable.write(blob);
             await writable.close();
+        }
+
+        const PNG_FOLDER_LABEL_KEY = 'postpointless:pngFolderLabel';
+        const PNG_FOLDER_DB_NAME = 'postpointless-file-handles';
+        const PNG_FOLDER_DB_STORE = 'handles';
+        const PNG_FOLDER_HANDLE_KEY = 'pngSequenceDirectory';
+
+        function updatePNGFolderInfo(handle, suffix = '') {
+            const label = handle ? handle.name : (localStorage.getItem(PNG_FOLDER_LABEL_KEY) || 'No folder selected');
+            PARAMS.pngFolderInfo = suffix ? `${label} ${suffix}` : label;
+            if (handle) {
+                localStorage.setItem(PNG_FOLDER_LABEL_KEY, handle.name);
+            }
+            pngFolderInfoBinding?.refresh();
+        }
+
+        function openPNGFolderDB() {
+            return new Promise((resolve, reject) => {
+                if (!window.indexedDB) {
+                    reject(new Error('IndexedDB is not available'));
+                    return;
+                }
+
+                const request = window.indexedDB.open(PNG_FOLDER_DB_NAME, 1);
+                request.onupgradeneeded = () => {
+                    const db = request.result;
+                    if (!db.objectStoreNames.contains(PNG_FOLDER_DB_STORE)) {
+                        db.createObjectStore(PNG_FOLDER_DB_STORE);
+                    }
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error || new Error('Could not open folder database'));
+            });
+        }
+
+        async function storePNGSequenceDirectoryHandle(handle) {
+            try {
+                const db = await openPNGFolderDB();
+                await new Promise((resolve, reject) => {
+                    const transaction = db.transaction(PNG_FOLDER_DB_STORE, 'readwrite');
+                    transaction.objectStore(PNG_FOLDER_DB_STORE).put(handle, PNG_FOLDER_HANDLE_KEY);
+                    transaction.oncomplete = resolve;
+                    transaction.onerror = () => reject(transaction.error);
+                });
+                db.close();
+            } catch (error) {
+                console.warn('Could not remember PNG folder handle.', error);
+            }
+        }
+
+        async function loadPNGSequenceDirectoryHandle() {
+            try {
+                const db = await openPNGFolderDB();
+                const handle = await new Promise((resolve, reject) => {
+                    const transaction = db.transaction(PNG_FOLDER_DB_STORE, 'readonly');
+                    const request = transaction.objectStore(PNG_FOLDER_DB_STORE).get(PNG_FOLDER_HANDLE_KEY);
+                    request.onsuccess = () => resolve(request.result || null);
+                    request.onerror = () => reject(request.error);
+                });
+                db.close();
+                return handle;
+            } catch (error) {
+                console.warn('Could not restore PNG folder handle.', error);
+                return null;
+            }
+        }
+
+        async function verifyDirectoryPermission(handle, requestPermission = false) {
+            if (!handle) return false;
+            const options = { mode: 'readwrite' };
+
+            if (typeof handle.queryPermission === 'function') {
+                const current = await handle.queryPermission(options);
+                if (current === 'granted') return true;
+            }
+
+            if (requestPermission && typeof handle.requestPermission === 'function') {
+                return await handle.requestPermission(options) === 'granted';
+            }
+
+            return typeof handle.queryPermission !== 'function';
+        }
+
+        async function choosePNGSequenceFolder() {
+            if (typeof window.showDirectoryPicker !== 'function') {
+                alert('Folder export needs Chrome or Edge on the Vercel/HTTPS version.');
+                return null;
+            }
+
+            try {
+                const handle = await window.showDirectoryPicker({
+                    id: 'post-pointless-png-sequence',
+                    mode: 'readwrite'
+                });
+                const permitted = await verifyDirectoryPermission(handle, true);
+                if (!permitted) {
+                    alert('Folder permission was not granted.');
+                    return null;
+                }
+
+                pngSequenceDirectoryHandle = handle;
+                updatePNGFolderInfo(handle);
+                await storePNGSequenceDirectoryHandle(handle);
+                return handle;
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error('PNG folder selection failed:', error);
+                    alert('Could not open that folder for writing.');
+                }
+                return null;
+            }
+        }
+
+        async function getPNGSequenceDirectoryForRender() {
+            let handle = pngSequenceDirectoryHandle;
+
+            if (!handle) {
+                handle = await loadPNGSequenceDirectoryHandle();
+                if (handle) {
+                    pngSequenceDirectoryHandle = handle;
+                    updatePNGFolderInfo(handle, '(saved)');
+                }
+            }
+
+            if (handle && await verifyDirectoryPermission(handle, true)) {
+                updatePNGFolderInfo(handle);
+                return handle;
+            }
+
+            return choosePNGSequenceFolder();
+        }
+
+        async function restorePNGSequenceFolder() {
+            const handle = await loadPNGSequenceDirectoryHandle();
+            if (!handle) {
+                pngFolderInfoBinding?.refresh();
+                return;
+            }
+
+            pngSequenceDirectoryHandle = handle;
+            const permitted = await verifyDirectoryPermission(handle, false);
+            updatePNGFolderInfo(handle, permitted ? '' : '(permission needed)');
         }
 
         function getSupportedRecordingMimeType(format) {
@@ -6618,7 +7025,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             }
         }
 
-        async function exportPNGSequenceToFolder() {
+        async function exportPNGSequenceToSelectedFolder() {
             if (!pointCloud) {
                 alert('Load a point cloud first!');
                 return;
@@ -6631,27 +7038,12 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 alert('PNG sequence export is already running.');
                 return;
             }
-            if (typeof window.showDirectoryPicker !== 'function') {
-                alert('Folder export needs Chrome or Edge on the Vercel/HTTPS version. Use PNG Seq ZIP for shorter renders.');
-                return;
-            }
 
             const settings = getPNGSequenceSettings();
             if (!confirmPNGSequenceExport(settings, 'folder')) return;
 
-            let rootDirectoryHandle;
-            try {
-                rootDirectoryHandle = await window.showDirectoryPicker({
-                    id: 'post-pointless-png-sequence',
-                    mode: 'readwrite'
-                });
-            } catch (error) {
-                if (error.name !== 'AbortError') {
-                    console.error('PNG folder selection failed:', error);
-                    alert('Could not open that folder for writing.');
-                }
-                return;
-            }
+            const rootDirectoryHandle = await getPNGSequenceDirectoryForRender();
+            if (!rootDirectoryHandle) return;
 
             const state = captureFrameSequenceState();
             frameSequenceExporting = true;
@@ -7387,6 +7779,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             });
         }
         updateUIToggleMode();
+        restorePNGSequenceFolder();
 
         function animate() {
             requestAnimationFrame(animate);
