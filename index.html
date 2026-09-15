@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>post.pointless v0.99.18 - Point Cloud Viewer</title>
+    <title>post.pointless v0.99.19 - Point Cloud Viewer</title>
     <style>
         * {
             margin: 0;
@@ -641,7 +641,7 @@
         // ============================================
         // APP VERSION - change this in ONE place!
         // ============================================
-        const APP_VERSION = '0.99.18';
+        const APP_VERSION = '0.99.19';
         
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -817,7 +817,6 @@
         const RECORDING_CHUNK_TIMESLICE_MS = 1000;
         const RECORDING_KEYFRAME_INTERVAL_MS = 1000;
         let fixWebmDurationPromise = null;
-        let jsZipPromise = null;
         let frameSequenceExporting = false;
         let renderLoopInfoBinding = null;
         let pngSequenceDirectoryHandle = null;
@@ -1258,11 +1257,6 @@
             title: 'Export PNG (full quality)',
             label: 'PNG',
         }).on('click', () => exportImage('png'));
-
-        exportFolder.addButton({
-            title: 'Export PNG Sequence ZIP (lossless fixed frames)',
-            label: 'PNG ZIP',
-        }).on('click', exportPNGSequence);
 
         exportFolder.addButton({
             title: 'Choose PNG Sequence Folder',
@@ -6724,14 +6718,6 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             loading.style.display = message ? 'block' : 'none';
         }
 
-        async function loadJSZip() {
-            if (!jsZipPromise) {
-                jsZipPromise = import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm');
-            }
-            const module = await jsZipPromise;
-            return module.default || module.JSZip || module;
-        }
-
         function canvasToPNGBlob() {
             return new Promise((resolve, reject) => {
                 renderer.domElement.toBlob((blob) => {
@@ -6946,83 +6932,6 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             scenePostAnimationTime += timeStep;
             updateScenePostTransform();
             updateTrails();
-        }
-
-        async function exportPNGSequence() {
-            if (!pointCloud) {
-                alert('Load a point cloud first!');
-                return;
-            }
-            if (PARAMS.isRecording) {
-                alert('Stop video recording before exporting a PNG sequence.');
-                return;
-            }
-            if (frameSequenceExporting) {
-                alert('PNG sequence export is already running.');
-                return;
-            }
-
-            const settings = getPNGSequenceSettings();
-            if (!confirmPNGSequenceExport(settings, 'ZIP')) return;
-
-            const zipFilename = withAutoIndex(settings.baseNoExt, 'zip');
-            const sequenceName = zipFilename.replace(/\.zip$/i, '');
-            const state = captureFrameSequenceState();
-
-            frameSequenceExporting = true;
-
-            try {
-                setLoadingMessage('Preparing PNG sequence...');
-                const JSZip = await loadJSZip();
-                const zip = new JSZip();
-                const framesFolder = zip.folder('frames') || zip;
-
-                applyRenderSize(settings.width, settings.height);
-                lastFrameTime = Date.now();
-
-                for (let frameIndex = 0; frameIndex < settings.frameCount; frameIndex++) {
-                    if (frameIndex > 0) {
-                        advanceFrameSequenceAnimation(settings.timeStep);
-                    }
-
-                    renderCurrentFrame();
-                    const blob = await canvasToPNGBlob();
-                    const frameName = `${sequenceName}_${String(frameIndex).padStart(settings.frameDigits, '0')}.png`;
-                    framesFolder.file(frameName, blob, { binary: true, compression: 'STORE' });
-
-                    if (frameIndex % 5 === 0 || frameIndex === settings.frameCount - 1) {
-                        setLoadingMessage(`PNG sequence ${frameIndex + 1} / ${settings.frameCount}`);
-                        await new Promise(resolve => setTimeout(resolve, 0));
-                    }
-                }
-
-                zip.file('README.txt', getPNGSequenceReadme(settings, sequenceName));
-
-                setLoadingMessage('Building PNG sequence ZIP...');
-                const zipBlob = await zip.generateAsync(
-                    { type: 'blob', compression: 'STORE' },
-                    (metadata) => setLoadingMessage(`Building ZIP ${metadata.percent.toFixed(0)}%`)
-                );
-
-                const url = URL.createObjectURL(zipBlob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = zipFilename;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                setTimeout(() => URL.revokeObjectURL(url), 30000);
-            } catch (error) {
-                console.error('PNG sequence export failed:', error);
-                alert('PNG sequence export failed. Try a shorter duration or lower resolution.');
-            } finally {
-                restoreFrameSequenceState(state);
-                restoreLiveViewport();
-                lastFrameTime = Date.now();
-                frameSequenceExporting = false;
-                setLoadingMessage('');
-                renderCurrentFrame();
-            }
         }
 
         async function exportPNGSequenceToSelectedFolder() {
