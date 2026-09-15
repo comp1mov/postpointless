@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>post.pointless v0.99.16 - Point Cloud Viewer</title>
+    <title>post.pointless v0.99.17 - Point Cloud Viewer</title>
     <style>
         * {
             margin: 0;
@@ -641,7 +641,7 @@
         // ============================================
         // APP VERSION - change this in ONE place!
         // ============================================
-        const APP_VERSION = '0.99.16';
+        const APP_VERSION = '0.99.17';
         
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -819,6 +819,7 @@
         let fixWebmDurationPromise = null;
         let jsZipPromise = null;
         let frameSequenceExporting = false;
+        let renderLoopInfoBinding = null;
         
         let currentFilename = 'No file loaded';
 
@@ -1052,6 +1053,7 @@
             isRecording: false,
             recWithUIButton: true,
             recordTimer: '00:00 / 00:04',
+            renderLoopInfo: 'Manual: no camera loop',
 
             resolution: 'Screen',
             showPreviewFrame: false,
@@ -1160,14 +1162,14 @@
                 'Slide': 'Slide',
                 'Fulldome (180 deg)': 'Fulldome',
             },
-        });
+        }).on('change', updateRenderLoopInfo);
         
         quickFolder.addBinding(PARAMS, 'loopDuration', {
-            label: 'Loop Duration (s)',
+            label: 'Camera Loop (s)',
             min: 0.1,
-            max: 180.0,
+            max: 900.0,
             step: 0.5,
-        });
+        }).on('change', updateRenderLoopInfo);
         
         // Sync Lines button - recreates lines with current time sync
         quickFolder.addButton({ title: 'Sync Lines' }).on('click', () => {
@@ -1274,14 +1276,41 @@
                 '30': 30,
                 '60': 60,
             },
-        });
+        }).on('change', updateRenderLoopInfo);
+
+        exportFolder.addBinding(PARAMS, 'loopDuration', {
+            label: 'Camera Loop (s)',
+            min: 0.1,
+            max: 900.0,
+            step: 0.5,
+        }).on('change', updateRenderLoopInfo);
 
         exportFolder.addBinding(PARAMS, 'videoDuration', {
-            label: 'Video Duration (s)',
+            label: 'Render Duration (s)',
             min: 1.0,
-            max: 180.0,
+            max: 900.0,
             step: 0.5,
-        }).on('change', () => updateRecordTimerDisplay(true));
+        }).on('change', () => {
+            updateRecordTimerDisplay(true);
+            updateRenderLoopInfo();
+        });
+
+        exportFolder.addButton({
+            title: 'Set render duration to camera loop duration',
+            label: 'Use Loop',
+        }).on('click', () => {
+            PARAMS.videoDuration = PARAMS.loopDuration;
+            updateRecordTimerDisplay(true);
+            updateRenderLoopInfo(true);
+            pane.refresh();
+            controlsPane.refresh();
+        });
+
+        renderLoopInfoBinding = exportFolder.addBinding(PARAMS, 'renderLoopInfo', {
+            label: 'Loop Check',
+            readonly: true,
+        });
+        updateRenderLoopInfo(true);
 
         exportFolder.addBinding(PARAMS, 'videoFormat', {
             label: 'Video Format',
@@ -1325,7 +1354,7 @@
         }).on('click', () => {
             // Collect all saveable parameters
             const preset = {};
-            const skipKeys = ['isRecording', 'fileName', 'sceneSource', 'activePoints', 'renderName', 'lockCamera'];
+            const skipKeys = ['isRecording', 'fileName', 'sceneSource', 'activePoints', 'renderName', 'lockCamera', 'renderLoopInfo'];
             
             for (const key in PARAMS) {
                 if (skipKeys.includes(key)) continue;
@@ -1390,6 +1419,8 @@
                         updateGrid();
                         updateBackground();
                         updateNoiseFalloff();
+                        updateRecordTimerDisplay(true);
+                        updateRenderLoopInfo(true);
                         if (PARAMS.enableLines) updateLines();
                         updateCloner();
                         
@@ -2389,21 +2420,21 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 'Slide': 'Slide',
                 'Fulldome (180 deg)': 'Fulldome',
             },
-        });
+        }).on('change', updateRenderLoopInfo);
 
         cameraFolder.addBinding(PARAMS, 'loopDuration', {
-            label: 'Loop Duration (s)',
+            label: 'Camera Loop (s)',
             min: 0.1,
-            max: 180.0,
+            max: 900.0,
             step: 0.5,
-        });
+        }).on('change', updateRenderLoopInfo);
         
         cameraFolder.addBinding(PARAMS, 'orbitSpeed', {
             label: 'Orbit Speed',
             min: -2.0,
             max: 2.0,
             step: 0.1,
-        });
+        }).on('change', updateRenderLoopInfo);
 
         cameraFolder.addBinding(PARAMS, 'parallaxAmplitude', {
             label: 'Parallax Amplitude',
@@ -6092,6 +6123,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             const weekStamp = getISOWeekStamp(new Date());
             const baseNoExt = `${name}_MF_${resolution}_${fps}fps_${weekStamp}_PNGSEQ`;
             const frameDigits = Math.max(4, String(frameCount - 1).length);
+            const loopStats = getCameraLoopStats();
 
             return {
                 fps,
@@ -6102,17 +6134,79 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 resolution,
                 baseNoExt,
                 frameDigits,
-                timeStep: 1 / fps
+                timeStep: 1 / fps,
+                loopStats
             };
         }
 
+        function getCameraLoopStats() {
+            const mode = PARAMS.cameraMode || 'Manual';
+            const renderDuration = Math.max(0.1, Number(PARAMS.videoDuration) || 1);
+            const loopDuration = Math.max(0.001, Number(PARAMS.loopDuration) || 20);
+            const hasCameraLoop = mode !== 'Manual' && mode !== 'Fulldome';
+            const modeSpeed = mode === 'Orbit Loop'
+                ? Math.abs(Number(PARAMS.orbitSpeed) || 0)
+                : 1;
+            const effectiveLoopDuration = hasCameraLoop && modeSpeed > 0
+                ? loopDuration / modeSpeed
+                : Infinity;
+            const loopsInRender = Number.isFinite(effectiveLoopDuration)
+                ? renderDuration / effectiveLoopDuration
+                : 0;
+
+            return {
+                mode,
+                renderDuration,
+                loopDuration,
+                effectiveLoopDuration,
+                loopsInRender,
+                hasCameraLoop,
+                modeSpeed
+            };
+        }
+
+        function formatLoopSeconds(seconds) {
+            if (!Number.isFinite(seconds)) return 'paused';
+            if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+            const minutes = seconds / 60;
+            return `${minutes.toFixed(minutes < 10 ? 1 : 0)}m`;
+        }
+
+        function updateRenderLoopInfo(force = false) {
+            const stats = getCameraLoopStats();
+
+            if (!stats.hasCameraLoop) {
+                PARAMS.renderLoopInfo = `${stats.mode}: no camera loop`;
+            } else if (!Number.isFinite(stats.effectiveLoopDuration)) {
+                PARAMS.renderLoopInfo = `${stats.mode}: paused`;
+            } else {
+                const loopLabel = formatLoopSeconds(stats.effectiveLoopDuration);
+                const renderLabel = formatLoopSeconds(stats.renderDuration);
+                PARAMS.renderLoopInfo = `${stats.mode}: ${stats.loopsInRender.toFixed(2)} loops / ${renderLabel} (loop ${loopLabel})`;
+            }
+
+            if (force || renderLoopInfoBinding) {
+                renderLoopInfoBinding?.refresh();
+            }
+        }
+
         function getPNGSequenceReadme(settings, sequenceName) {
+            const stats = settings.loopStats || getCameraLoopStats();
+            const effectiveLoopLabel = Number.isFinite(stats.effectiveLoopDuration)
+                ? `${stats.effectiveLoopDuration.toFixed(3)} seconds`
+                : 'paused';
+
             return [
                 'post.pointless PNG sequence',
                 `fps: ${settings.fps}`,
                 `duration: ${settings.duration.toFixed(3)} seconds`,
                 `frames: ${settings.frameCount}`,
                 `resolution: ${settings.width}x${settings.height}`,
+                `camera mode: ${stats.mode}`,
+                `camera loop duration: ${stats.loopDuration.toFixed(3)} seconds`,
+                `effective camera loop: ${effectiveLoopLabel}`,
+                `camera loops in render: ${stats.loopsInRender.toFixed(4)}`,
+                `import note: interpret the image sequence at ${settings.fps} fps`,
                 '',
                 `ffmpeg example: ffmpeg -framerate ${settings.fps} -start_number 0 -i frames/${sequenceName}_%0${settings.frameDigits}d.png -c:v libx264 -crf 12 -pix_fmt yuv420p ${sequenceName}.mp4`
             ].join('\n');
@@ -6121,10 +6215,14 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
         function confirmPNGSequenceExport(settings, targetLabel) {
             const heavyExport = settings.frameCount > 360 || (settings.width * settings.height * settings.frameCount) > (1920 * 1080 * 240);
             if (!heavyExport) return true;
+            const stats = settings.loopStats || getCameraLoopStats();
+            const cameraInfo = stats.hasCameraLoop
+                ? ` Camera will render ${stats.loopsInRender.toFixed(2)} loop(s).`
+                : '';
 
             return confirm(
                 `PNG sequence will render ${settings.frameCount} lossless frames at ${settings.width}x${settings.height}. ` +
-                `This can take a while and create a large ${targetLabel}. Continue?`
+                `This can take a while and create a large ${targetLabel}.${cameraInfo} Continue?`
             );
         }
 
@@ -6660,8 +6758,9 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             if (PARAMS.cameraMode === 'Manual') return;
 
             // Orbit speed applied during time accumulation
+            const loopDuration = Math.max(0.001, Number(PARAMS.loopDuration) || 20);
             const speedMultiplier = (PARAMS.cameraMode === 'Orbit Loop') ? PARAMS.orbitSpeed : 1.0;
-            cameraAnimationTime += (deltaTime / PARAMS.loopDuration) * Math.PI * 2 * speedMultiplier;
+            cameraAnimationTime += (deltaTime / loopDuration) * Math.PI * 2 * speedMultiplier;
             const angle = cameraAnimationTime;
 
             if (PARAMS.cameraMode === 'Parallax Loop') {
