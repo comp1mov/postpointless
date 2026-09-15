@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>post.pointless v0.99.15 - Point Cloud Viewer</title>
+    <title>post.pointless v0.99.16 - Point Cloud Viewer</title>
     <style>
         * {
             margin: 0;
@@ -641,7 +641,7 @@
         // ============================================
         // APP VERSION - change this in ONE place!
         // ============================================
-        const APP_VERSION = '0.99.15';
+        const APP_VERSION = '0.99.16';
         
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -1258,6 +1258,11 @@
             title: 'Export PNG Sequence ZIP (lossless fixed frames)',
             label: 'PNG Seq',
         }).on('click', exportPNGSequence);
+
+        exportFolder.addButton({
+            title: 'Export PNG Sequence to Folder',
+            label: 'PNG Folder',
+        }).on('click', exportPNGSequenceToFolder);
 
         exportFolder.addBlade({ view: 'separator' });
 
@@ -6060,6 +6065,103 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             return baseNoExt + suffix + '.' + extension;
         }
 
+        function sanitizeExportFilePart(value, fallback = 'render') {
+            const cleaned = String(value || '')
+                .trim()
+                .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+                .replace(/\s+/g, '_')
+                .replace(/_+/g, '_')
+                .replace(/^[._]+|[._]+$/g, '')
+                .slice(0, 120)
+                .replace(/[._]+$/g, '');
+            return cleaned || fallback;
+        }
+
+        function getPNGSequenceSettings() {
+            const fps = Math.max(1, Number(PARAMS.videoFPS) || 60);
+            const duration = Math.max(0.1, Number(PARAMS.videoDuration) || 1);
+            const frameCount = Math.max(1, Math.round(duration * fps));
+            const preset = getExportPreset();
+            const width = Math.max(1, Math.round(preset.width));
+            const height = Math.max(1, Math.round(preset.height));
+            const renderBaseName = (PARAMS.renderName === 'untitled' || PARAMS.renderName.trim() === '')
+                ? PARAMS.filename.replace(/\.[^/.]+$/, '')
+                : PARAMS.renderName;
+            const name = sanitizeExportFilePart(renderBaseName, 'post_pointless');
+            const resolution = getExportResolutionLabel({ width, height });
+            const weekStamp = getISOWeekStamp(new Date());
+            const baseNoExt = `${name}_MF_${resolution}_${fps}fps_${weekStamp}_PNGSEQ`;
+            const frameDigits = Math.max(4, String(frameCount - 1).length);
+
+            return {
+                fps,
+                duration,
+                frameCount,
+                width,
+                height,
+                resolution,
+                baseNoExt,
+                frameDigits,
+                timeStep: 1 / fps
+            };
+        }
+
+        function getPNGSequenceReadme(settings, sequenceName) {
+            return [
+                'post.pointless PNG sequence',
+                `fps: ${settings.fps}`,
+                `duration: ${settings.duration.toFixed(3)} seconds`,
+                `frames: ${settings.frameCount}`,
+                `resolution: ${settings.width}x${settings.height}`,
+                '',
+                `ffmpeg example: ffmpeg -framerate ${settings.fps} -start_number 0 -i frames/${sequenceName}_%0${settings.frameDigits}d.png -c:v libx264 -crf 12 -pix_fmt yuv420p ${sequenceName}.mp4`
+            ].join('\n');
+        }
+
+        function confirmPNGSequenceExport(settings, targetLabel) {
+            const heavyExport = settings.frameCount > 360 || (settings.width * settings.height * settings.frameCount) > (1920 * 1080 * 240);
+            if (!heavyExport) return true;
+
+            return confirm(
+                `PNG sequence will render ${settings.frameCount} lossless frames at ${settings.width}x${settings.height}. ` +
+                `This can take a while and create a large ${targetLabel}. Continue?`
+            );
+        }
+
+        async function createUniqueDirectoryHandle(parentHandle, baseName) {
+            for (let index = 0; index < 1000; index++) {
+                const candidate = index === 0 ? baseName : `${baseName}_${index + 1}`;
+
+                try {
+                    await parentHandle.getDirectoryHandle(candidate, { create: false });
+                } catch (error) {
+                    if (error.name === 'NotFoundError') {
+                        return parentHandle.getDirectoryHandle(candidate, { create: true });
+                    }
+                    if (error.name === 'TypeMismatchError') {
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+
+            return parentHandle.getDirectoryHandle(`${baseName}_${Date.now()}`, { create: true });
+        }
+
+        async function writeTextFileToDirectory(directoryHandle, filename, text) {
+            const fileHandle = await directoryHandle.getFileHandle(filename, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(text);
+            await writable.close();
+        }
+
+        async function writeBlobToDirectory(directoryHandle, filename, blob) {
+            const fileHandle = await directoryHandle.getFileHandle(filename, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+        }
+
         function getSupportedRecordingMimeType(format) {
             if (!window.MediaRecorder) return '';
 
@@ -6355,32 +6457,11 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 return;
             }
 
-            const fps = Math.max(1, Number(PARAMS.videoFPS) || 60);
-            const duration = Math.max(0.1, Number(PARAMS.videoDuration) || 1);
-            const frameCount = Math.max(1, Math.round(duration * fps));
-            const preset = getExportPreset();
-            const width = Math.max(1, Math.round(preset.width));
-            const height = Math.max(1, Math.round(preset.height));
-            const heavyExport = frameCount > 360 || (width * height * frameCount) > (1920 * 1080 * 240);
+            const settings = getPNGSequenceSettings();
+            if (!confirmPNGSequenceExport(settings, 'ZIP')) return;
 
-            if (heavyExport) {
-                const ok = confirm(
-                    `PNG sequence will render ${frameCount} lossless frames at ${width}x${height}. ` +
-                    'This can take a while and create a large ZIP. Continue?'
-                );
-                if (!ok) return;
-            }
-
-            const name = (PARAMS.renderName === 'untitled' || PARAMS.renderName.trim() === '')
-                ? PARAMS.filename.replace(/\.[^/.]+$/, '')
-                : PARAMS.renderName;
-            const resolution = getExportResolutionLabel({ width, height });
-            const weekStamp = getISOWeekStamp(new Date());
-            const baseNoExt = name + '_MF_' + resolution + '_' + fps + 'fps_' + weekStamp + '_PNGSEQ';
-            const zipFilename = withAutoIndex(baseNoExt, 'zip');
+            const zipFilename = withAutoIndex(settings.baseNoExt, 'zip');
             const sequenceName = zipFilename.replace(/\.zip$/i, '');
-            const frameDigits = Math.max(4, String(frameCount - 1).length);
-            const timeStep = 1 / fps;
             const state = captureFrameSequenceState();
 
             frameSequenceExporting = true;
@@ -6391,34 +6472,26 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
                 const zip = new JSZip();
                 const framesFolder = zip.folder('frames') || zip;
 
-                applyRenderSize(width, height);
+                applyRenderSize(settings.width, settings.height);
                 lastFrameTime = Date.now();
 
-                for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+                for (let frameIndex = 0; frameIndex < settings.frameCount; frameIndex++) {
                     if (frameIndex > 0) {
-                        advanceFrameSequenceAnimation(timeStep);
+                        advanceFrameSequenceAnimation(settings.timeStep);
                     }
 
                     renderCurrentFrame();
                     const blob = await canvasToPNGBlob();
-                    const frameName = `${sequenceName}_${String(frameIndex).padStart(frameDigits, '0')}.png`;
+                    const frameName = `${sequenceName}_${String(frameIndex).padStart(settings.frameDigits, '0')}.png`;
                     framesFolder.file(frameName, blob, { binary: true, compression: 'STORE' });
 
-                    if (frameIndex % 5 === 0 || frameIndex === frameCount - 1) {
-                        setLoadingMessage(`PNG sequence ${frameIndex + 1} / ${frameCount}`);
+                    if (frameIndex % 5 === 0 || frameIndex === settings.frameCount - 1) {
+                        setLoadingMessage(`PNG sequence ${frameIndex + 1} / ${settings.frameCount}`);
                         await new Promise(resolve => setTimeout(resolve, 0));
                     }
                 }
 
-                zip.file('README.txt', [
-                    'post.pointless PNG sequence',
-                    `fps: ${fps}`,
-                    `duration: ${duration.toFixed(3)} seconds`,
-                    `frames: ${frameCount}`,
-                    `resolution: ${width}x${height}`,
-                    '',
-                    `ffmpeg example: ffmpeg -framerate ${fps} -start_number 0 -i frames/${sequenceName}_%0${frameDigits}d.png -c:v libx264 -crf 12 -pix_fmt yuv420p ${sequenceName}.mp4`
-                ].join('\n'));
+                zip.file('README.txt', getPNGSequenceReadme(settings, sequenceName));
 
                 setLoadingMessage('Building PNG sequence ZIP...');
                 const zipBlob = await zip.generateAsync(
@@ -6437,6 +6510,84 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             } catch (error) {
                 console.error('PNG sequence export failed:', error);
                 alert('PNG sequence export failed. Try a shorter duration or lower resolution.');
+            } finally {
+                restoreFrameSequenceState(state);
+                restoreLiveViewport();
+                lastFrameTime = Date.now();
+                frameSequenceExporting = false;
+                setLoadingMessage('');
+                renderCurrentFrame();
+            }
+        }
+
+        async function exportPNGSequenceToFolder() {
+            if (!pointCloud) {
+                alert('Load a point cloud first!');
+                return;
+            }
+            if (PARAMS.isRecording) {
+                alert('Stop video recording before exporting a PNG sequence.');
+                return;
+            }
+            if (frameSequenceExporting) {
+                alert('PNG sequence export is already running.');
+                return;
+            }
+            if (typeof window.showDirectoryPicker !== 'function') {
+                alert('Folder export needs Chrome or Edge on the Vercel/HTTPS version. Use PNG Seq ZIP for shorter renders.');
+                return;
+            }
+
+            const settings = getPNGSequenceSettings();
+            if (!confirmPNGSequenceExport(settings, 'folder')) return;
+
+            let rootDirectoryHandle;
+            try {
+                rootDirectoryHandle = await window.showDirectoryPicker({
+                    id: 'post-pointless-png-sequence',
+                    mode: 'readwrite'
+                });
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error('PNG folder selection failed:', error);
+                    alert('Could not open that folder for writing.');
+                }
+                return;
+            }
+
+            const state = captureFrameSequenceState();
+            frameSequenceExporting = true;
+
+            try {
+                setLoadingMessage('Preparing PNG folder...');
+                const renderDirectoryHandle = await createUniqueDirectoryHandle(rootDirectoryHandle, settings.baseNoExt);
+                const framesDirectoryHandle = await renderDirectoryHandle.getDirectoryHandle('frames', { create: true });
+                const sequenceName = renderDirectoryHandle.name || settings.baseNoExt;
+
+                applyRenderSize(settings.width, settings.height);
+                lastFrameTime = Date.now();
+
+                for (let frameIndex = 0; frameIndex < settings.frameCount; frameIndex++) {
+                    if (frameIndex > 0) {
+                        advanceFrameSequenceAnimation(settings.timeStep);
+                    }
+
+                    renderCurrentFrame();
+                    const blob = await canvasToPNGBlob();
+                    const frameName = `${sequenceName}_${String(frameIndex).padStart(settings.frameDigits, '0')}.png`;
+                    await writeBlobToDirectory(framesDirectoryHandle, frameName, blob);
+
+                    if (frameIndex % 5 === 0 || frameIndex === settings.frameCount - 1) {
+                        setLoadingMessage(`PNG folder ${frameIndex + 1} / ${settings.frameCount}`);
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                    }
+                }
+
+                await writeTextFileToDirectory(renderDirectoryHandle, 'README.txt', getPNGSequenceReadme(settings, sequenceName));
+                alert(`PNG sequence saved to folder: ${sequenceName}`);
+            } catch (error) {
+                console.error('PNG folder export failed:', error);
+                alert('PNG folder export failed. Try another folder, a shorter duration, or a lower resolution.');
             } finally {
                 restoreFrameSequenceState(state);
                 restoreLiveViewport();
