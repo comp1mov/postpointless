@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>post.pointless v0.99.13 - Point Cloud Viewer</title>
+    <title>post.pointless v0.99.14 - Point Cloud Viewer</title>
     <style>
         * {
             margin: 0;
@@ -641,7 +641,7 @@
         // ============================================
         // APP VERSION - change this in ONE place!
         // ============================================
-        const APP_VERSION = '0.99.13';
+        const APP_VERSION = '0.99.14';
         
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -817,6 +817,8 @@
         const RECORDING_CHUNK_TIMESLICE_MS = 1000;
         const RECORDING_KEYFRAME_INTERVAL_MS = 1000;
         let fixWebmDurationPromise = null;
+        let jsZipPromise = null;
+        let frameSequenceExporting = false;
         
         let currentFilename = 'No file loaded';
 
@@ -1251,6 +1253,11 @@
             title: 'Export PNG (full quality)',
             label: 'PNG',
         }).on('click', () => exportImage('png'));
+
+        exportFolder.addButton({
+            title: 'Export PNG Sequence ZIP (lossless fixed frames)',
+            label: 'PNG Seq',
+        }).on('click', exportPNGSequence);
 
         exportFolder.addBlade({ view: 'separator' });
 
@@ -5881,6 +5888,27 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             setMaterialResolution(width, height);
         }
 
+        function renderCurrentFrame() {
+            renderer.clear();
+
+            backgroundCamera.position.copy(effectCamera.position);
+            backgroundCamera.quaternion.copy(effectCamera.quaternion);
+            backgroundCamera.fov = effectCamera.fov;
+            backgroundCamera.updateProjectionMatrix();
+            renderer.render(backgroundScene, backgroundCamera);
+
+            renderer.clearDepth();
+
+            if (PARAMS.orthographic) {
+                orthoCamera.position.copy(effectCamera.position);
+                orthoCamera.quaternion.copy(effectCamera.quaternion);
+                updateCameraProjection();
+                renderer.render(scene, orthoCamera);
+            } else {
+                renderer.render(scene, effectCamera);
+            }
+        }
+
         function buildGoldenSpiralPath(width, height) {
             const cx = width * 0.61803398875;
             const cy = height * 0.38196601125;
@@ -6079,6 +6107,343 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             }
 
             return blob;
+        }
+
+        function setLoadingMessage(message) {
+            const loading = document.getElementById('loading');
+            if (!loading) return;
+            loading.textContent = message || 'Loading...';
+            loading.style.display = message ? 'block' : 'none';
+        }
+
+        async function loadJSZip() {
+            if (!jsZipPromise) {
+                jsZipPromise = import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm');
+            }
+            const module = await jsZipPromise;
+            return module.default || module.JSZip || module;
+        }
+
+        function canvasToPNGBlob() {
+            return new Promise((resolve, reject) => {
+                renderer.domElement.toBlob((blob) => {
+                    if (blob) {
+                        resolve(blob);
+                    } else {
+                        reject(new Error('Canvas PNG capture failed'));
+                    }
+                }, 'image/png');
+            });
+        }
+
+        function captureFrameSequenceState() {
+            const frozenAttr = trailsObject && trailsObject.geometry
+                ? trailsObject.geometry.attributes.frozenTime
+                : null;
+
+            return {
+                cameraAnimationTime,
+                clonerAnimationTime,
+                scenePostAnimationTime,
+                wiggleTime,
+                sliceDirection,
+                cloudRotationX: PARAMS.cloudRotationX,
+                cloudRotationY: PARAMS.cloudRotationY,
+                cloudRotationZ: PARAMS.cloudRotationZ,
+                slicePosition: PARAMS.slicePosition,
+                lineTrimOffset: PARAMS.lineTrimOffset,
+                pointTime: pointsMaterial && pointsMaterial.uniforms.time
+                    ? pointsMaterial.uniforms.time.value
+                    : 0,
+                effectCameraPosition: effectCamera.position.clone(),
+                effectCameraQuaternion: effectCamera.quaternion.clone(),
+                effectCameraFOV: effectCamera.fov,
+                trailFreezeIndex,
+                trailFrameCounter,
+                trailFrozenTime: frozenAttr ? new Float32Array(frozenAttr.array) : null,
+                hasCameraSpeedSample,
+                smoothedCameraSpeedPx,
+                previousCameraSpeedPosition: previousCameraSpeedPosition.clone()
+            };
+        }
+
+        function restoreFrameSequenceState(state) {
+            cameraAnimationTime = state.cameraAnimationTime;
+            clonerAnimationTime = state.clonerAnimationTime;
+            scenePostAnimationTime = state.scenePostAnimationTime;
+            wiggleTime = state.wiggleTime;
+            sliceDirection = state.sliceDirection;
+
+            PARAMS.cloudRotationX = state.cloudRotationX;
+            PARAMS.cloudRotationY = state.cloudRotationY;
+            PARAMS.cloudRotationZ = state.cloudRotationZ;
+            PARAMS.slicePosition = state.slicePosition;
+            PARAMS.lineTrimOffset = state.lineTrimOffset;
+
+            effectCamera.position.copy(state.effectCameraPosition);
+            effectCamera.quaternion.copy(state.effectCameraQuaternion);
+            effectCamera.fov = state.effectCameraFOV;
+            effectCamera.updateProjectionMatrix();
+
+            hasCameraSpeedSample = state.hasCameraSpeedSample;
+            smoothedCameraSpeedPx = state.smoothedCameraSpeedPx;
+            previousCameraSpeedPosition.copy(state.previousCameraSpeedPosition);
+
+            if (pointsMaterial && pointsMaterial.uniforms) {
+                pointsMaterial.uniforms.time.value = state.pointTime;
+                pointsMaterial.uniforms.cloudRotationX.value = PARAMS.cloudRotationX * Math.PI / 180;
+                pointsMaterial.uniforms.cloudRotationY.value = PARAMS.cloudRotationY * Math.PI / 180;
+                pointsMaterial.uniforms.cloudRotationZ.value = PARAMS.cloudRotationZ * Math.PI / 180;
+                if (pointsMaterial.uniforms.slicePosition) {
+                    pointsMaterial.uniforms.slicePosition.value = PARAMS.slicePosition;
+                }
+            }
+
+            if (linesMaterial && linesMaterial.uniforms && pointsMaterial) {
+                syncLineUniforms();
+                if (linesMaterial.uniforms.trimOffset) {
+                    linesMaterial.uniforms.trimOffset.value = PARAMS.lineTrimOffset;
+                }
+            }
+
+            if (state.trailFrozenTime && trailsObject && trailsObject.geometry) {
+                const frozenAttr = trailsObject.geometry.attributes.frozenTime;
+                if (frozenAttr && frozenAttr.array.length === state.trailFrozenTime.length) {
+                    frozenAttr.array.set(state.trailFrozenTime);
+                    frozenAttr.needsUpdate = true;
+                }
+            }
+            trailFreezeIndex = state.trailFreezeIndex;
+            trailFrameCounter = state.trailFrameCounter;
+
+            updateClonerTransforms();
+            updateScenePostTransform();
+        }
+
+        function advanceFrameSequenceAnimation(timeStep) {
+            effectCamera.position.copy(manualCamera.position);
+            effectCamera.quaternion.copy(manualCamera.quaternion);
+            effectCamera.fov = manualCamera.fov;
+            effectCamera.updateProjectionMatrix();
+
+            if (PARAMS.cameraMode !== 'Manual') {
+                baseCameraPosition.copy(manualCamera.position).sub(controls.target);
+                baseCameraFOV = manualCamera.fov;
+                updateCameraAnimation(timeStep);
+            }
+
+            if (targetGizmo && targetGizmo.visible) {
+                targetGizmo.position.copy(controls.target);
+            }
+
+            if (pointsMaterial) {
+                pointsMaterial.uniforms.time.value += timeStep * PARAMS.noiseSpeed;
+                if (pointsMaterial.uniforms.time.value > 10000.0) {
+                    pointsMaterial.uniforms.time.value -= 10000.0;
+                }
+
+                if (PARAMS.rotationAnimX !== 0 || PARAMS.rotationAnimY !== 0 || PARAMS.rotationAnimZ !== 0) {
+                    PARAMS.cloudRotationX += PARAMS.rotationAnimX * timeStep;
+                    PARAMS.cloudRotationY += PARAMS.rotationAnimY * timeStep;
+                    PARAMS.cloudRotationZ += PARAMS.rotationAnimZ * timeStep;
+
+                    if (PARAMS.cloudRotationX > 180) PARAMS.cloudRotationX -= 360;
+                    if (PARAMS.cloudRotationX < -180) PARAMS.cloudRotationX += 360;
+                    if (PARAMS.cloudRotationY > 180) PARAMS.cloudRotationY -= 360;
+                    if (PARAMS.cloudRotationY < -180) PARAMS.cloudRotationY += 360;
+                    if (PARAMS.cloudRotationZ > 180) PARAMS.cloudRotationZ -= 360;
+                    if (PARAMS.cloudRotationZ < -180) PARAMS.cloudRotationZ += 360;
+
+                    pointsMaterial.uniforms.cloudRotationX.value = PARAMS.cloudRotationX * Math.PI / 180;
+                    pointsMaterial.uniforms.cloudRotationY.value = PARAMS.cloudRotationY * Math.PI / 180;
+                    pointsMaterial.uniforms.cloudRotationZ.value = PARAMS.cloudRotationZ * Math.PI / 180;
+                }
+
+                wiggleTime += timeStep;
+                const wiggleX = Math.sin(wiggleTime * PARAMS.starWiggleSpeed.x) * PARAMS.starWiggleAmp.x;
+                const wiggleY = Math.sin(wiggleTime * PARAMS.starWiggleSpeed.y * 1.3 + 1.0) * PARAMS.starWiggleAmp.y;
+                const wiggleZ = Math.sin(wiggleTime * PARAMS.starWiggleSpeed.z * 0.7 + 2.0) * PARAMS.starWiggleAmp.z;
+
+                const starX = PARAMS.starCenter.x + wiggleX;
+                const starY = PARAMS.starCenter.y + wiggleY;
+                const starZ = PARAMS.starCenter.z + wiggleZ;
+
+                pointsMaterial.uniforms.starCenterBase.value.set(PARAMS.starCenter.x, PARAMS.starCenter.y, PARAMS.starCenter.z);
+                pointsMaterial.uniforms.starCenter.value.set(starX, starY, starZ);
+                pointsMaterial.uniforms.starWiggle.value.set(wiggleX, wiggleY, wiggleZ);
+
+                if (linesMaterial && linesMaterial.uniforms) {
+                    linesMaterial.uniforms.time.value = pointsMaterial.uniforms.time.value;
+                    linesMaterial.uniforms.cloudRotationX.value = pointsMaterial.uniforms.cloudRotationX.value;
+                    linesMaterial.uniforms.cloudRotationY.value = pointsMaterial.uniforms.cloudRotationY.value;
+                    linesMaterial.uniforms.cloudRotationZ.value = pointsMaterial.uniforms.cloudRotationZ.value;
+                    linesMaterial.uniforms.starCenterBase.value.copy(pointsMaterial.uniforms.starCenterBase.value);
+                    linesMaterial.uniforms.starCenter.value.copy(pointsMaterial.uniforms.starCenter.value);
+                    linesMaterial.uniforms.starWiggle.value.copy(pointsMaterial.uniforms.starWiggle.value);
+
+                    if (PARAMS.lineTrimAnimate) {
+                        PARAMS.lineTrimOffset += timeStep * PARAMS.lineTrimSpeed * 0.1;
+                        if (PARAMS.lineTrimOffset > 1.0) PARAMS.lineTrimOffset -= 1.0;
+                    }
+                    linesMaterial.uniforms.trimStart.value = PARAMS.lineTrimStart;
+                    linesMaterial.uniforms.trimEnd.value = PARAMS.lineTrimEnd;
+                    linesMaterial.uniforms.trimOffset.value = PARAMS.lineTrimOffset;
+                }
+
+                pointsMaterial.uniforms.enableFulldome.value = (PARAMS.cameraMode === 'Fulldome');
+                pointsMaterial.uniforms.fulldomeRotation.value = PARAMS.fulldomeRotation * Math.PI / 180;
+
+                if (PARAMS.enableSlice && PARAMS.sliceAnimate) {
+                    const maxPos = 1.0 + PARAMS.sliceThickness;
+                    const minPos = -1.0 - PARAMS.sliceThickness;
+                    const dirMod = PARAMS.sliceReverse ? -1 : 1;
+
+                    if (PARAMS.sliceMode === 'Ping-Pong') {
+                        PARAMS.slicePosition += timeStep * PARAMS.sliceSpeed * sliceDirection * dirMod;
+                        if (PARAMS.slicePosition >= maxPos) {
+                            PARAMS.slicePosition = maxPos;
+                            sliceDirection = -1;
+                        } else if (PARAMS.slicePosition <= minPos) {
+                            PARAMS.slicePosition = minPos;
+                            sliceDirection = 1;
+                        }
+                    } else {
+                        PARAMS.slicePosition += timeStep * PARAMS.sliceSpeed * dirMod;
+                        if (!PARAMS.sliceReverse && PARAMS.slicePosition > maxPos) {
+                            PARAMS.slicePosition = minPos;
+                        } else if (PARAMS.sliceReverse && PARAMS.slicePosition < minPos) {
+                            PARAMS.slicePosition = maxPos;
+                        }
+                    }
+                    pointsMaterial.uniforms.slicePosition.value = PARAMS.slicePosition;
+
+                    if (pointsMaterial.uniforms.sliceFade) {
+                        const fadeFrames = 10;
+                        const fps = Math.max(1, PARAMS.videoFPS || 60);
+                        const speed = Math.max(0.000001, Math.abs(PARAMS.sliceSpeed));
+                        const fadeDist = (speed / fps) * fadeFrames;
+                        const distToMin = Math.abs(PARAMS.slicePosition - minPos);
+                        const distToMax = Math.abs(maxPos - PARAMS.slicePosition);
+                        const edgeDist = Math.min(distToMin, distToMax);
+                        let t = fadeDist > 0 ? Math.min(1, edgeDist / fadeDist) : 1;
+                        t = t * t * (3 - 2 * t);
+                        pointsMaterial.uniforms.sliceFade.value = t;
+                    }
+                }
+
+                clonerAnimationTime += timeStep;
+                updateClonerTransforms();
+            }
+
+            scenePostAnimationTime += timeStep;
+            updateScenePostTransform();
+            updateTrails();
+        }
+
+        async function exportPNGSequence() {
+            if (!pointCloud) {
+                alert('Load a point cloud first!');
+                return;
+            }
+            if (PARAMS.isRecording) {
+                alert('Stop video recording before exporting a PNG sequence.');
+                return;
+            }
+            if (frameSequenceExporting) {
+                alert('PNG sequence export is already running.');
+                return;
+            }
+
+            const fps = Math.max(1, Number(PARAMS.videoFPS) || 60);
+            const duration = Math.max(0.1, Number(PARAMS.videoDuration) || 1);
+            const frameCount = Math.max(1, Math.round(duration * fps));
+            const preset = getExportPreset();
+            const width = Math.max(1, Math.round(preset.width));
+            const height = Math.max(1, Math.round(preset.height));
+            const heavyExport = frameCount > 360 || (width * height * frameCount) > (1920 * 1080 * 240);
+
+            if (heavyExport) {
+                const ok = confirm(
+                    `PNG sequence will render ${frameCount} lossless frames at ${width}x${height}. ` +
+                    'This can take a while and create a large ZIP. Continue?'
+                );
+                if (!ok) return;
+            }
+
+            const name = (PARAMS.renderName === 'untitled' || PARAMS.renderName.trim() === '')
+                ? PARAMS.filename.replace(/\.[^/.]+$/, '')
+                : PARAMS.renderName;
+            const resolution = getExportResolutionLabel({ width, height });
+            const weekStamp = getISOWeekStamp(new Date());
+            const baseNoExt = name + '_MF_' + resolution + '_' + fps + 'fps_' + weekStamp + '_PNGSEQ';
+            const zipFilename = withAutoIndex(baseNoExt, 'zip');
+            const sequenceName = zipFilename.replace(/\.zip$/i, '');
+            const frameDigits = Math.max(4, String(frameCount - 1).length);
+            const timeStep = 1 / fps;
+            const state = captureFrameSequenceState();
+
+            frameSequenceExporting = true;
+
+            try {
+                setLoadingMessage('Preparing PNG sequence...');
+                const JSZip = await loadJSZip();
+                const zip = new JSZip();
+                const framesFolder = zip.folder('frames') || zip;
+
+                applyRenderSize(width, height);
+                lastFrameTime = Date.now();
+
+                for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+                    if (frameIndex > 0) {
+                        advanceFrameSequenceAnimation(timeStep);
+                    }
+
+                    renderCurrentFrame();
+                    const blob = await canvasToPNGBlob();
+                    const frameName = `${sequenceName}_${String(frameIndex).padStart(frameDigits, '0')}.png`;
+                    framesFolder.file(frameName, blob, { binary: true, compression: 'STORE' });
+
+                    if (frameIndex % 5 === 0 || frameIndex === frameCount - 1) {
+                        setLoadingMessage(`PNG sequence ${frameIndex + 1} / ${frameCount}`);
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                    }
+                }
+
+                zip.file('README.txt', [
+                    'post.pointless PNG sequence',
+                    `fps: ${fps}`,
+                    `duration: ${duration.toFixed(3)} seconds`,
+                    `frames: ${frameCount}`,
+                    `resolution: ${width}x${height}`,
+                    '',
+                    `ffmpeg example: ffmpeg -framerate ${fps} -start_number 0 -i frames/${sequenceName}_%0${frameDigits}d.png -c:v libx264 -crf 12 -pix_fmt yuv420p ${sequenceName}.mp4`
+                ].join('\n'));
+
+                setLoadingMessage('Building PNG sequence ZIP...');
+                const zipBlob = await zip.generateAsync(
+                    { type: 'blob', compression: 'STORE' },
+                    (metadata) => setLoadingMessage(`Building ZIP ${metadata.percent.toFixed(0)}%`)
+                );
+
+                const url = URL.createObjectURL(zipBlob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = zipFilename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 30000);
+            } catch (error) {
+                console.error('PNG sequence export failed:', error);
+                alert('PNG sequence export failed. Try a shorter duration or lower resolution.');
+            } finally {
+                restoreFrameSequenceState(state);
+                restoreLiveViewport();
+                lastFrameTime = Date.now();
+                frameSequenceExporting = false;
+                setLoadingMessage('');
+                renderCurrentFrame();
+            }
         }
 
         function exportImage(format) { 
@@ -6775,6 +7140,8 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
         function animate() {
             requestAnimationFrame(animate);
 
+            if (frameSequenceExporting) return;
+
             updateRecordTimerDisplay();
 
             const now = Date.now();
@@ -6985,30 +7352,7 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             document.getElementById('effect-dist').textContent = effectDist.toFixed(2);
             updateCameraSpeedStats(animationTimeStep);
 
-            // DUAL-LAYER RENDERING
-            // 1. Clear everything
-            renderer.clear();
-            
-            // 2. Render background scene FIRST (without camera effects!)
-            backgroundCamera.position.copy(effectCamera.position);
-            backgroundCamera.quaternion.copy(effectCamera.quaternion);
-            backgroundCamera.fov = effectCamera.fov;
-            backgroundCamera.updateProjectionMatrix();
-            renderer.render(backgroundScene, backgroundCamera);
-            
-            // 3. Render main scene ON TOP (with all effects: fisheye, spherical, etc.)
-            renderer.clearDepth(); // Clear only depth, keep background color
-            
-            // Choose camera: ortho or perspective
-            if (PARAMS.orthographic) {
-                // Sync ortho camera position/rotation with effect camera
-                orthoCamera.position.copy(effectCamera.position);
-                orthoCamera.quaternion.copy(effectCamera.quaternion);
-                updateCameraProjection();
-                renderer.render(scene, orthoCamera);
-            } else {
-                renderer.render(scene, effectCamera);
-            }
+            renderCurrentFrame();
         }
 
         // RESIZE
