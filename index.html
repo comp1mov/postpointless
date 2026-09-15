@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>post.pointless v0.99.11 - Point Cloud Viewer</title>
+    <title>post.pointless v0.99.12 - Point Cloud Viewer</title>
     <style>
         * {
             margin: 0;
@@ -208,6 +208,26 @@
             pointer-events: none;
             display: none;
             z-index: 101;
+        }
+
+        #composition-guide {
+            position: absolute;
+            pointer-events: none;
+            display: none;
+            z-index: 102;
+        }
+
+        #composition-guide svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+            overflow: visible;
+        }
+
+        #composition-guide line,
+        #composition-guide path,
+        #composition-guide circle {
+            vector-effect: non-scaling-stroke;
         }
 
         #recording-indicator {
@@ -565,6 +585,10 @@
     
     <div id="loading">Loading...</div>
 
+    <div id="composition-guide" aria-hidden="true">
+        <svg viewBox="0 0 1 1" preserveAspectRatio="none"></svg>
+    </div>
+
     <div id="help-modal" aria-hidden="true">
         <div id="help-panel" role="dialog" aria-modal="true" aria-labelledby="help-title">
             <div id="help-header">
@@ -613,7 +637,7 @@
         // ============================================
         // APP VERSION - change this in ONE place!
         // ============================================
-        const APP_VERSION = '0.99.11';
+        const APP_VERSION = '0.99.12';
         
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -1014,7 +1038,7 @@
 
             videoFPS: 60,
             videoDuration: 4.0,
-            videoFormat: 'webm',
+            videoFormat: 'mp4',
             videoBitrate: 30,
             isRecording: false,
             recWithUIButton: true,
@@ -1024,6 +1048,9 @@
             showPreviewFrame: false,
             showSafeZone: true,
             safeZoneMargin: 0.05,
+            showCompositionGuide: false,
+            compositionGuide: 'Thirds',
+            compositionGuideOpacity: 0.55,
             
             // Lines
             enableLines: false,
@@ -1184,6 +1211,28 @@
             step: 0.01,
         }).on('change', updatePreviewFrame);
 
+        exportFolder.addBinding(PARAMS, 'showCompositionGuide', {
+            label: 'Composition Guide',
+        }).on('change', updatePreviewFrame);
+
+        exportFolder.addBinding(PARAMS, 'compositionGuide', {
+            label: 'Guide Type',
+            options: {
+                'Rule of Thirds': 'Thirds',
+                'Diagonals': 'Diagonals',
+                'Center Cross': 'Crosshair',
+                'Golden Spiral': 'Golden Spiral',
+                'All Guides': 'All',
+            },
+        }).on('change', updatePreviewFrame);
+
+        exportFolder.addBinding(PARAMS, 'compositionGuideOpacity', {
+            label: 'Guide Opacity',
+            min: 0.1,
+            max: 1.0,
+            step: 0.05,
+        }).on('change', updatePreviewFrame);
+
         exportFolder.addBlade({ view: 'separator' });
 
         exportFolder.addButton({
@@ -1217,8 +1266,8 @@
         exportFolder.addBinding(PARAMS, 'videoFormat', {
             label: 'Video Format',
             options: {
+                'MP4': 'mp4',
                 'WebM (seekable)': 'webm',
-                'MP4 (experimental)': 'mp4',
             },
         });
 
@@ -5825,13 +5874,78 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             setMaterialResolution(width, height);
         }
 
+        function buildGoldenSpiralPath(width, height) {
+            const cx = width * 0.61803398875;
+            const cy = height * 0.38196601125;
+            const radiusX = width * 0.62;
+            const radiusY = height * 0.62;
+            const points = [];
+
+            for (let i = 0; i <= 160; i++) {
+                const t = i / 160;
+                const angle = Math.PI * 1.08 + t * Math.PI * 4.15;
+                const falloff = Math.pow(0.61803398875, t * 4.0);
+                const x = cx + Math.cos(angle) * radiusX * falloff;
+                const y = cy + Math.sin(angle) * radiusY * falloff;
+                points.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`);
+            }
+
+            return points.join(' ');
+        }
+
+        function renderCompositionGuide(width, height) {
+            const guide = document.getElementById('composition-guide');
+            const svg = guide.querySelector('svg');
+            const mode = PARAMS.compositionGuide;
+            const opacity = Math.max(0.05, Math.min(1.0, PARAMS.compositionGuideOpacity));
+            const stroke = `rgba(255, 255, 255, ${opacity})`;
+            const accent = `rgba(255, 218, 120, ${Math.min(1.0, opacity + 0.1)})`;
+            const parts = [];
+            const addLine = (x1, y1, x2, y2, color = stroke, dash = '') => {
+                const dashAttr = dash ? ` stroke-dasharray="${dash}"` : '';
+                parts.push(`<line x1="${x1.toFixed(2)}" y1="${y1.toFixed(2)}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}" stroke="${color}" stroke-width="1"${dashAttr}/>`); 
+            };
+
+            svg.setAttribute('viewBox', `0 0 ${width.toFixed(2)} ${height.toFixed(2)}`);
+
+            if (mode === 'Thirds' || mode === 'All') {
+                addLine(width / 3, 0, width / 3, height);
+                addLine(width * 2 / 3, 0, width * 2 / 3, height);
+                addLine(0, height / 3, width, height / 3);
+                addLine(0, height * 2 / 3, width, height * 2 / 3);
+            }
+
+            if (mode === 'Diagonals' || mode === 'All') {
+                addLine(0, 0, width, height, stroke, '8 8');
+                addLine(width, 0, 0, height, stroke, '8 8');
+            }
+
+            if (mode === 'Crosshair' || mode === 'All') {
+                addLine(width / 2, 0, width / 2, height, accent);
+                addLine(0, height / 2, width, height / 2, accent);
+                parts.push(`<circle cx="${(width / 2).toFixed(2)}" cy="${(height / 2).toFixed(2)}" r="${Math.max(6, Math.min(width, height) * 0.025).toFixed(2)}" fill="none" stroke="${accent}" stroke-width="1"/>`);
+            }
+
+            if (mode === 'Golden Spiral' || mode === 'All') {
+                const gx = width * 0.61803398875;
+                const gy = height * 0.38196601125;
+                addLine(gx, 0, gx, height, accent, '5 7');
+                addLine(0, gy, width, gy, accent, '5 7');
+                parts.push(`<path d="${buildGoldenSpiralPath(width, height)}" fill="none" stroke="${accent}" stroke-width="1.5"/>`);
+            }
+
+            svg.innerHTML = parts.join('');
+        }
+
         function updatePreviewFrame() {
             const frame = document.getElementById('preview-frame');
             const safeZone = document.getElementById('safe-zone');
+            const compositionGuide = document.getElementById('composition-guide');
             
             if (!PARAMS.showPreviewFrame) {
                 frame.style.display = 'none';
                 safeZone.style.display = 'none';
+                compositionGuide.style.display = 'none';
                 return;
             }
 
@@ -5858,6 +5972,17 @@ sliceMachineFolder.addBinding(PARAMS, 'sliceSpeed', {
             frame.style.left = (window.innerWidth - frameWidth) / 2 + 'px';
             frame.style.top = (window.innerHeight - frameHeight) / 2 + 'px';
             frame.style.display = 'block';
+
+            compositionGuide.style.width = frameWidth + 'px';
+            compositionGuide.style.height = frameHeight + 'px';
+            compositionGuide.style.left = (window.innerWidth - frameWidth) / 2 + 'px';
+            compositionGuide.style.top = (window.innerHeight - frameHeight) / 2 + 'px';
+            if (PARAMS.showCompositionGuide) {
+                renderCompositionGuide(frameWidth, frameHeight);
+                compositionGuide.style.display = 'block';
+            } else {
+                compositionGuide.style.display = 'none';
+            }
             
             // Safe zone
             if (PARAMS.showSafeZone) {
