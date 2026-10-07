@@ -1,6 +1,8 @@
-# post.pointless Vercel Preview
+# post.pointillism Vercel Preview
 
-Deploy root for the current post.pointless baseline.
+Актуально на 2026-10-07: название проекта — **post.pointillism**. Instagram: [@post.pointillism](https://www.instagram.com/post.pointillism/). Художественное направление: превращать облака точек в картины и печатные работы; Memory Fragments продолжают развиваться как интерактивный пространственный формат. Имена существующих папок, репозиториев, доменов и схем сохранения пока сохраняются для совместимости.
+
+Deploy root for the current post.pointillism baseline.
 
 Source snapshot:
 
